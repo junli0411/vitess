@@ -19,11 +19,12 @@ package engine
 import (
 	"encoding/json"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/vtgate/vindexes"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/key"
+	"vitess.io/vitess/go/vt/vtgate/vindexes"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 var _ Primitive = (*VindexFunc)(nil)
@@ -78,14 +79,19 @@ func (code VindexOpcode) MarshalJSON() ([]byte, error) {
 	return json.Marshal(vindexOpcodeName[code])
 }
 
+// RouteType returns a description of the query routing type used by the primitive
+func (vf *VindexFunc) RouteType() string {
+	return vindexOpcodeName[vf.Opcode]
+}
+
 // Execute performs a non-streaming exec.
-func (vf *VindexFunc) Execute(vcursor VCursor, bindVars, joinVars map[string]*querypb.BindVariable, wantfields bool) (*sqltypes.Result, error) {
-	return vf.mapVindex(vcursor, bindVars, joinVars)
+func (vf *VindexFunc) Execute(vcursor VCursor, bindVars map[string]*querypb.BindVariable, wantfields bool) (*sqltypes.Result, error) {
+	return vf.mapVindex(vcursor, bindVars)
 }
 
 // StreamExecute performs a streaming exec.
-func (vf *VindexFunc) StreamExecute(vcursor VCursor, bindVars, joinVars map[string]*querypb.BindVariable, wantfields bool, callback func(*sqltypes.Result) error) error {
-	r, err := vf.mapVindex(vcursor, bindVars, joinVars)
+func (vf *VindexFunc) StreamExecute(vcursor VCursor, bindVars map[string]*querypb.BindVariable, wantfields bool, callback func(*sqltypes.Result) error) error {
+	r, err := vf.mapVindex(vcursor, bindVars)
 	if err != nil {
 		return err
 	}
@@ -96,17 +102,16 @@ func (vf *VindexFunc) StreamExecute(vcursor VCursor, bindVars, joinVars map[stri
 }
 
 // GetFields fetches the field info.
-func (vf *VindexFunc) GetFields(vcursor VCursor, bindVars, joinVars map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
+func (vf *VindexFunc) GetFields(vcursor VCursor, bindVars map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
 	return &sqltypes.Result{Fields: vf.Fields}, nil
 }
 
-func (vf *VindexFunc) mapVindex(vcursor VCursor, bindVars, joinVars map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
-	bindVars = combineVars(bindVars, joinVars)
-	key, err := vf.Value.ResolveValue(bindVars)
+func (vf *VindexFunc) mapVindex(vcursor VCursor, bindVars map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
+	k, err := vf.Value.ResolveValue(bindVars)
 	if err != nil {
 		return nil, err
 	}
-	vkey, err := sqltypes.Cast(key, sqltypes.VarBinary)
+	vkey, err := sqltypes.Cast(k, sqltypes.VarBinary)
 	if err != nil {
 		return nil, err
 	}
@@ -114,36 +119,30 @@ func (vf *VindexFunc) mapVindex(vcursor VCursor, bindVars, joinVars map[string]*
 		Fields: vf.Fields,
 	}
 
-	switch mapper := vf.Vindex.(type) {
-	case vindexes.Unique:
-		ksids, err := mapper.Map(vcursor, []sqltypes.Value{key})
-		if err != nil {
-			return nil, err
-		}
-		switch {
-		case ksids[0].Range != nil:
-			result.Rows = append(result.Rows, vf.buildRow(vkey, nil, ksids[0].Range))
+	destinations, err := vf.Vindex.Map(vcursor, []sqltypes.Value{k})
+	if err != nil {
+		return nil, err
+	}
+	switch d := destinations[0].(type) {
+	case key.DestinationKeyRange:
+		if d.KeyRange != nil {
+			result.Rows = append(result.Rows, vf.buildRow(vkey, nil, d.KeyRange))
 			result.RowsAffected = 1
-		case ksids[0].ID != nil:
+		}
+	case key.DestinationKeyspaceID:
+		if len(d) > 0 {
 			result.Rows = [][]sqltypes.Value{
-				vf.buildRow(vkey, ksids[0].ID, nil),
+				vf.buildRow(vkey, d, nil),
 			}
 			result.RowsAffected = 1
 		}
-	case vindexes.NonUnique:
-		ksidss, err := mapper.Map(vcursor, []sqltypes.Value{key})
-		if err != nil {
-			return nil, err
+	case key.DestinationKeyspaceIDs:
+		for _, ksid := range d {
+			result.Rows = append(result.Rows, vf.buildRow(vkey, ksid, nil))
 		}
-		if ksidss[0].Range != nil {
-			result.Rows = append(result.Rows, vf.buildRow(vkey, nil, ksidss[0].Range))
-			result.RowsAffected = 1
-		} else {
-			for _, ksid := range ksidss[0].IDs {
-				result.Rows = append(result.Rows, vf.buildRow(vkey, ksid, nil))
-			}
-			result.RowsAffected = uint64(len(ksidss[0].IDs))
-		}
+		result.RowsAffected = uint64(len(d))
+	case key.DestinationNone:
+		// Nothing to do.
 	default:
 		panic("unexpected")
 	}

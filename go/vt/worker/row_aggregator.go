@@ -22,12 +22,13 @@ import (
 	"strings"
 
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	"github.com/youtube/vitess/go/sqlescape"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/stats"
+	"vitess.io/vitess/go/sqlescape"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/stats"
 
-	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
+	tabletmanagerdatapb "vitess.io/vitess/go/vt/proto/tabletmanagerdata"
 )
 
 // RowAggregator aggregates SQL reconciliation statements into one statement.
@@ -48,9 +49,7 @@ type RowAggregator struct {
 	td            *tabletmanagerdatapb.TableDefinition
 	diffType      DiffType
 	builder       QueryBuilder
-	// statsCounters has a "diffType" specific stats.Counters object to track how
-	// many rows were changed per table.
-	statsCounters *stats.Counters
+	statsCounters *stats.CountersWithSingleLabel
 
 	buffer       bytes.Buffer
 	bufferedRows int
@@ -60,7 +59,7 @@ type RowAggregator struct {
 // The index of the elements in statCounters must match the elements
 // in "DiffTypes" i.e. the first counter is for inserts, second for updates
 // and the third for deletes.
-func NewRowAggregator(ctx context.Context, maxRows, maxSize int, insertChannel chan string, dbName string, td *tabletmanagerdatapb.TableDefinition, diffType DiffType, statsCounters *stats.Counters) *RowAggregator {
+func NewRowAggregator(ctx context.Context, maxRows, maxSize int, insertChannel chan string, dbName string, td *tabletmanagerdatapb.TableDefinition, diffType DiffType, statsCounters *stats.CountersWithSingleLabel) *RowAggregator {
 	// Construct head and tail base commands for the reconciliation statement.
 	var builder QueryBuilder
 	switch diffType {
@@ -126,7 +125,7 @@ func (ra *RowAggregator) Flush() error {
 	select {
 	case ra.insertChannel <- ra.buffer.String():
 	case <-ra.ctx.Done():
-		return fmt.Errorf("failed to flush RowAggregator and send the query to a writer thread channel: %v", ra.ctx.Err())
+		return vterrors.Wrap(ra.ctx.Err(), "failed to flush RowAggregator and send the query to a writer thread channel")
 	}
 
 	// Update our statistics.

@@ -21,9 +21,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	"github.com/youtube/vitess/go/vt/vttablet/endtoend/framework"
+	"vitess.io/vitess/go/sqltypes"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	"vitess.io/vitess/go/vt/vttablet/endtoend/framework"
 )
 
 var point12 = "\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf0?\x00\x00\x00\x00\x00\x00\x00@"
@@ -63,7 +63,7 @@ func TestCharaterSet(t *testing.T) {
 				OrgTable:     "vitess_test",
 				Database:     "vttest",
 				OrgName:      "charval",
-				ColumnLength: 768,
+				ColumnLength: 30,
 				Charset:      33,
 			}, {
 				Name:         "binval",
@@ -794,7 +794,14 @@ func TestJSONType(t *testing.T) {
 		},
 	}
 	if !reflect.DeepEqual(*qr, want) {
-		t.Errorf("Execute: \n%v, want \n%v", prettyPrint(*qr), prettyPrint(want))
+		// MariaDB 10.3 has different behavior.
+		want2 := want.Copy()
+		want2.Fields[1].Type = sqltypes.Blob
+		want2.Fields[1].Charset = 33
+		want2.Rows[0][1] = sqltypes.TestValue(sqltypes.Blob, "{\"foo\": \"bar\"}")
+		if !reflect.DeepEqual(*qr, *want2) {
+			t.Errorf("Execute:\n%v, want\n%v or\n%v", prettyPrint(*qr), prettyPrint(want), prettyPrint(*want2))
+		}
 	}
 
 }

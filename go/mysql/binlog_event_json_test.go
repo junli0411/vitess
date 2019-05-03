@@ -17,7 +17,7 @@ limitations under the License.
 package mysql
 
 import (
-	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +26,9 @@ func TestJSON(t *testing.T) {
 		data     []byte
 		expected string
 	}{{
+		data:     []byte{},
+		expected: `'null'`,
+	}, {
 		data:     []byte{0, 1, 0, 14, 0, 11, 0, 1, 0, 12, 12, 0, 97, 1, 98},
 		expected: `JSON_OBJECT('a','b')`,
 	}, {
@@ -43,6 +46,21 @@ func TestJSON(t *testing.T) {
 	}, {
 		data:     []byte{12, 13, 115, 99, 97, 108, 97, 114, 32, 115, 116, 114, 105, 110, 103},
 		expected: `'"scalar string"'`,
+	}, {
+		// repeat the same string 10 times, to test readVariableInt when length of string
+		// requires 2 bytes to store
+		data: []byte{12, 129, 2,
+			115, 99, 97, 108, 97, 114, 32, 115, 116, 114, 105, 110, 103,
+			115, 99, 97, 108, 97, 114, 32, 115, 116, 114, 105, 110, 103,
+			115, 99, 97, 108, 97, 114, 32, 115, 116, 114, 105, 110, 103,
+			115, 99, 97, 108, 97, 114, 32, 115, 116, 114, 105, 110, 103,
+			115, 99, 97, 108, 97, 114, 32, 115, 116, 114, 105, 110, 103,
+			115, 99, 97, 108, 97, 114, 32, 115, 116, 114, 105, 110, 103,
+			115, 99, 97, 108, 97, 114, 32, 115, 116, 114, 105, 110, 103,
+			115, 99, 97, 108, 97, 114, 32, 115, 116, 114, 105, 110, 103,
+			115, 99, 97, 108, 97, 114, 32, 115, 116, 114, 105, 110, 103,
+			115, 99, 97, 108, 97, 114, 32, 115, 116, 114, 105, 110, 103},
+		expected: `'"scalar stringscalar stringscalar stringscalar stringscalar stringscalar stringscalar stringscalar stringscalar stringscalar string"'`,
 	}, {
 		data:     []byte{4, 1},
 		expected: `'true'`,
@@ -120,19 +138,22 @@ func TestJSON(t *testing.T) {
 	}, {
 		// opaque, bit field. Not yet implemented.
 		data:     []byte{15, 16, 2, 202, 254},
-		expected: `ERROR: opaque type 16 is not supported yet, with data [2 202 254]`,
+		expected: `opaque type 16 is not supported yet, with data [2 202 254]`,
 	}}
 
 	for _, tcase := range testcases {
-		r, err := printJSONData(tcase.data)
-		got := ""
-		if err != nil {
-			got = fmt.Sprintf("ERROR: %v", err)
-		} else {
-			got = string(r)
-		}
-		if got != tcase.expected {
-			t.Errorf("unexpected output for %v: got %v expected %v", tcase.data, got, tcase.expected)
-		}
+		t.Run(tcase.expected, func(t *testing.T) {
+			r, err := printJSONData(tcase.data)
+			if err != nil {
+				if got := err.Error(); !strings.HasPrefix(got, tcase.expected) {
+					t.Errorf("unexpected output for %v: got [%v] expected [%v]", tcase.data, got, tcase.expected)
+				}
+			} else {
+				if got := string(r); got != tcase.expected {
+					t.Errorf("unexpected output for %v: got [%v] expected [%v]", tcase.data, got, tcase.expected)
+				}
+			}
+
+		})
 	}
 }

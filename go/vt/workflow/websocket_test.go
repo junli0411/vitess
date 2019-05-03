@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
 )
 
 func TestWebSocket(t *testing.T) {
@@ -41,7 +41,7 @@ func TestWebSocket(t *testing.T) {
 	go http.Serve(listener, nil)
 
 	// Run the manager in the background.
-	wg, cancel := startManager(t, m)
+	wg, _, cancel := StartManager(m)
 
 	// Start a client websocket.
 	u := url.URL{Scheme: "ws", Host: listener.Addr().String(), Path: "/workflow"}

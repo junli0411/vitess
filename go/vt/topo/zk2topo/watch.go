@@ -22,8 +22,9 @@ import (
 	"sync"
 
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo"
 )
 
 // Watch is part of the topo.Conn interface.
@@ -33,11 +34,11 @@ func (zs *Server) Watch(ctx context.Context, filePath string) (*topo.WatchData, 
 	// Get the initial value, set the initial watch
 	data, stats, watch, err := zs.conn.GetW(ctx, zkPath)
 	if err != nil {
-		return &topo.WatchData{Err: convertError(err)}, nil, nil
+		return &topo.WatchData{Err: convertError(err, zkPath)}, nil, nil
 	}
 	if stats == nil {
 		// No stats --> node doesn't exist.
-		return &topo.WatchData{Err: topo.ErrNoNode}, nil, nil
+		return &topo.WatchData{Err: topo.NewError(topo.NoNode, zkPath)}, nil, nil
 	}
 	wd := &topo.WatchData{
 		Contents: data,
@@ -72,25 +73,25 @@ func (zs *Server) Watch(ctx context.Context, filePath string) (*topo.WatchData, 
 				}
 
 				if event.Err != nil {
-					c <- &topo.WatchData{Err: fmt.Errorf("received a non-OK event for %v: %v", zkPath, event.Err)}
+					c <- &topo.WatchData{Err: vterrors.Wrapf(event.Err, "received a non-OK event for %v", zkPath)}
 					return
 				}
 
 			case <-stop:
 				// user is not interested any more
-				c <- &topo.WatchData{Err: topo.ErrInterrupted}
+				c <- &topo.WatchData{Err: topo.NewError(topo.Interrupted, "watch")}
 				return
 			}
 
 			// Get the value again, and send it, or error.
 			data, stats, watch, err = zs.conn.GetW(ctx, zkPath)
 			if err != nil {
-				c <- &topo.WatchData{Err: convertError(err)}
+				c <- &topo.WatchData{Err: convertError(err, zkPath)}
 				return
 			}
 			if stats == nil {
 				// No data --> node doesn't exist
-				c <- &topo.WatchData{Err: topo.ErrNoNode}
+				c <- &topo.WatchData{Err: topo.NewError(topo.NoNode, zkPath)}
 				return
 			}
 			wd := &topo.WatchData{

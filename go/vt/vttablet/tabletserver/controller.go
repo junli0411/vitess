@@ -19,16 +19,16 @@ package tabletserver
 import (
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/rules"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/vttablet/queryservice"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/rules"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
 
 	"time"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // Controller defines the control interface for TabletServer.
@@ -39,7 +39,7 @@ type Controller interface {
 	AddStatusPart()
 
 	// InitDBConfig sets up the db config vars.
-	InitDBConfig(querypb.Target, dbconfigs.DBConfigs) error
+	InitDBConfig(querypb.Target, *dbconfigs.DBConfigs) error
 
 	// SetServingType transitions the query service to the required serving type.
 	// Returns true if the state of QueryService or the tablet type changed.
@@ -76,7 +76,7 @@ type Controller interface {
 	SchemaEngine() *schema.Engine
 
 	// BroadcastHealth sends the current health to all listeners
-	BroadcastHealth(terTimestamp int64, stats *querypb.RealtimeStats)
+	BroadcastHealth(terTimestamp int64, stats *querypb.RealtimeStats, maxCache time.Duration)
 
 	// HeartbeatLag returns the current lag as calculated by the heartbeat
 	// package, if heartbeat is enabled. Otherwise returns 0.

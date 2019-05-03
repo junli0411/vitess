@@ -26,9 +26,9 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vtctl"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vtctl"
 )
 
 // backendExplorer is a class that uses the Backend interface of a
@@ -89,7 +89,7 @@ func (ex *backendExplorer) HandlePath(nodePath string, r *http.Request) *Result 
 	case nil:
 		if len(data) > 0 {
 			// It has contents, we just use it if possible.
-			decoded, err := vtctl.DecodeContent(relativePath, data)
+			decoded, err := vtctl.DecodeContent(relativePath, data, false)
 			if err != nil {
 				result.Error = err.Error()
 			} else {

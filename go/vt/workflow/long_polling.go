@@ -29,9 +29,9 @@ import (
 
 	"golang.org/x/net/context"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/acl"
-	"github.com/youtube/vitess/go/timer"
+	"vitess.io/vitess/go/acl"
+	"vitess.io/vitess/go/timer"
+	"vitess.io/vitess/go/vt/log"
 )
 
 const (

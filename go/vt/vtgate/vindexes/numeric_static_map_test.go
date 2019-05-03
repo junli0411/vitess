@@ -22,19 +22,15 @@ import (
 
 	"strings"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/testfiles"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/key"
 )
 
 // createVindex creates the "numeric_static_map" vindex object which is used by
 // each test.
-//
-// IMPORTANT: This code is called per test and must not be called from init()
-// because our internal implementation of testfiles.Locate() does not support to
-// be called from init().
 func createVindex() (Vindex, error) {
 	m := make(map[string]string)
-	m["json_path"] = testfiles.Locate("vtgate/numeric_static_map_test.json")
+	m["json_path"] = "testdata/numeric_static_map_test.json"
 	return CreateVindex("numeric_static_map", "numericStaticMap", m)
 }
 
@@ -63,7 +59,7 @@ func TestNumericStaticMapMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create vindex: %v", err)
 	}
-	got, err := numericStaticMap.(Unique).Map(nil, []sqltypes.Value{
+	got, err := numericStaticMap.Map(nil, []sqltypes.Value{
 		sqltypes.NewInt64(1),
 		sqltypes.NewInt64(2),
 		sqltypes.NewInt64(3),
@@ -80,16 +76,16 @@ func TestNumericStaticMapMap(t *testing.T) {
 
 	// in the third slice, we expect 2 instead of 3 as numeric_static_map_test.json
 	// has 3 mapped to 2
-	want := []KsidOrRange{
-		{ID: []byte("\x00\x00\x00\x00\x00\x00\x00\x01")},
-		{ID: []byte("\x00\x00\x00\x00\x00\x00\x00\x02")},
-		{ID: []byte("\x00\x00\x00\x00\x00\x00\x00\x02")},
-		{ID: nil},
-		{ID: []byte("\x00\x00\x00\x00\x00\x00\x00\x04")},
-		{ID: []byte("\x00\x00\x00\x00\x00\x00\x00\x05")},
-		{ID: []byte("\x00\x00\x00\x00\x00\x00\x00\x06")},
-		{ID: []byte("\x00\x00\x00\x00\x00\x00\x00\x07")},
-		{ID: []byte("\x00\x00\x00\x00\x00\x00\x00\x08")},
+	want := []key.Destination{
+		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x01")),
+		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x02")),
+		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x02")),
+		key.DestinationNone{},
+		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x04")),
+		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x05")),
+		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x06")),
+		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x07")),
+		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x08")),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Map(): %+v, want %+v", got, want)

@@ -27,7 +27,7 @@ import (
 
 	"golang.org/x/net/context"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 func TestLocalControllerNoSchemaChanges(t *testing.T) {
@@ -59,11 +59,11 @@ func TestLocalControllerOpen(t *testing.T) {
 		t.Fatalf("Open should fail, no such dir, but got: %v", err)
 	}
 
-	schemaChangeDir, err := ioutil.TempDir("", "localcontroller-test")
+	schemaChangeDir, _ := ioutil.TempDir("", "localcontroller-test")
 	defer os.RemoveAll(schemaChangeDir)
 
 	// create a file under schema change dir
-	_, err = os.Create(path.Join(schemaChangeDir, "create_test_table.sql"))
+	_, err := os.Create(path.Join(schemaChangeDir, "create_test_table.sql"))
 	if err != nil {
 		t.Fatalf("failed to create sql file, error: %v", err)
 	}

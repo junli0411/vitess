@@ -19,17 +19,14 @@ package srvtopo
 import (
 	"fmt"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	"vitess.io/vitess/go/vt/vttablet/queryservice"
 )
 
 // TargetStats is an interface that the srvtopo module uses to handle
 // routing of queries.
 // - discovery.TabletStatsCache will implement the discovery part of the
 //   interface, and discoverygateway will have the QueryService.
-// - hybridgateway will also implement this interface: for each l2vtgate pool,
-//   it will establish a StreamHealth connection, and store the returned
-//   health stats.
 type TargetStats interface {
 	// GetAggregateStats returns the aggregate stats for the given Target.
 	// The srvtopo module will use that information to route queries
@@ -43,23 +40,6 @@ type TargetStats interface {
 	// know its cell to complete the Target. Also returns the QueryService
 	// to use to reach that target.
 	GetMasterCell(keyspace, shard string) (cell string, qs queryservice.QueryService, err error)
-}
-
-// TargetStatsListener is an interface used to propagate TargetStats changes.
-// - discovery.TabletStatsCache will implement this interface.
-// - the StreamHealth method in l2vtgate will use this interface to surface
-//   the health of its targets.
-type TargetStatsListener interface {
-	// Subscribe will return the current full state of the TargetStats,
-	// and a channel that will receive subsequent updates. The int returned
-	// is the channel id, and can be sent to unsubscribe to stop
-	// notifications.
-	Subscribe() (int, []TargetStatsEntry, <-chan (*TargetStatsEntry), error)
-
-	// Unsubscribe stops sending updates to the channel returned
-	// by Subscribe. The channel still needs to be drained to
-	// avoid deadlocks.
-	Unsubscribe(int) error
 }
 
 // TargetStatsEntry has the updated information for a Target.

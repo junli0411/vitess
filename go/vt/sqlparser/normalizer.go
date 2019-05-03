@@ -19,9 +19,9 @@ package sqlparser
 import (
 	"fmt"
 
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sqltypes"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 // Normalize changes the statement to use bind values, and
@@ -69,6 +69,10 @@ func (nz *normalizer) WalkStatement(node SQLNode) (bool, error) {
 		nz.convertSQLVal(node)
 	case *ComparisonExpr:
 		nz.convertComparison(node)
+	case *ColName, TableName:
+		// Common node types that never contain SQLVals or ListArgs but create a lot of object
+		// allocations.
+		return false, nil
 	}
 	return true, nil
 }
@@ -80,6 +84,13 @@ func (nz *normalizer) WalkSelect(node SQLNode) (bool, error) {
 		nz.convertSQLValDedup(node)
 	case *ComparisonExpr:
 		nz.convertComparison(node)
+	case *ColName, TableName:
+		// Common node types that never contain SQLVals or ListArgs but create a lot of object
+		// allocations.
+		return false, nil
+	case OrderBy, GroupBy:
+		// do not make a bind var for order by column_position
+		return false, nil
 	}
 	return true, nil
 }
@@ -211,6 +222,10 @@ func GetBindvars(stmt Statement) map[string]struct{} {
 	bindvars := make(map[string]struct{})
 	_ = Walk(func(node SQLNode) (kontinue bool, err error) {
 		switch node := node.(type) {
+		case *ColName, TableName:
+			// Common node types that never contain SQLVals or ListArgs but create a lot of object
+			// allocations.
+			return false, nil
 		case *SQLVal:
 			if node.Type == ValArg {
 				bindvars[string(node.Val[1:])] = struct{}{}

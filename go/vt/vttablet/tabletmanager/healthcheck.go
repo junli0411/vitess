@@ -33,14 +33,14 @@ import (
 	"html/template"
 	"time"
 
-	log "github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
-	"github.com/youtube/vitess/go/timer"
-	"github.com/youtube/vitess/go/vt/health"
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/timer"
+	"vitess.io/vitess/go/vt/health"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/topo"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 const (
@@ -281,6 +281,16 @@ func (agent *ActionAgent) runHealthCheckLocked() {
 		agent.UpdateStream.Enable()
 	} else {
 		agent.UpdateStream.Disable()
+	}
+
+	// All master tablets have to run the VReplication engine.
+	// There is no guarantee that VREngine was succesfully started when tabletmanager
+	// came up. This is because the mysql could have been in read-only mode, etc.
+	// So, start the engine if it's not already running.
+	if tablet.Type == topodatapb.TabletType_MASTER && !agent.VREngine.IsOpen() {
+		if err := agent.VREngine.Open(agent.batchCtx); err == nil {
+			log.Info("VReplication engine successfully started")
+		}
 	}
 
 	// save the health record

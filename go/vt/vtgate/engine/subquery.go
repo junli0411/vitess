@@ -17,8 +17,8 @@ limitations under the License.
 package engine
 
 import (
-	"github.com/youtube/vitess/go/sqltypes"
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	"vitess.io/vitess/go/sqltypes"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 var _ Primitive = (*Subquery)(nil)
@@ -31,9 +31,14 @@ type Subquery struct {
 	Subquery Primitive
 }
 
+// RouteType returns a description of the query routing type used by the primitive
+func (sq *Subquery) RouteType() string {
+	return sq.Subquery.RouteType()
+}
+
 // Execute performs a non-streaming exec.
-func (sq *Subquery) Execute(vcursor VCursor, bindVars, joinVars map[string]*querypb.BindVariable, wantfields bool) (*sqltypes.Result, error) {
-	inner, err := sq.Subquery.Execute(vcursor, bindVars, joinVars, wantfields)
+func (sq *Subquery) Execute(vcursor VCursor, bindVars map[string]*querypb.BindVariable, wantfields bool) (*sqltypes.Result, error) {
+	inner, err := sq.Subquery.Execute(vcursor, bindVars, wantfields)
 	if err != nil {
 		return nil, err
 	}
@@ -41,15 +46,15 @@ func (sq *Subquery) Execute(vcursor VCursor, bindVars, joinVars map[string]*quer
 }
 
 // StreamExecute performs a streaming exec.
-func (sq *Subquery) StreamExecute(vcursor VCursor, bindVars, joinVars map[string]*querypb.BindVariable, wantfields bool, callback func(*sqltypes.Result) error) error {
-	return sq.Subquery.StreamExecute(vcursor, bindVars, joinVars, wantfields, func(inner *sqltypes.Result) error {
+func (sq *Subquery) StreamExecute(vcursor VCursor, bindVars map[string]*querypb.BindVariable, wantfields bool, callback func(*sqltypes.Result) error) error {
+	return sq.Subquery.StreamExecute(vcursor, bindVars, wantfields, func(inner *sqltypes.Result) error {
 		return callback(sq.buildResult(inner))
 	})
 }
 
 // GetFields fetches the field info.
-func (sq *Subquery) GetFields(vcursor VCursor, bindVars, joinVars map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
-	inner, err := sq.Subquery.GetFields(vcursor, bindVars, joinVars)
+func (sq *Subquery) GetFields(vcursor VCursor, bindVars map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
+	inner, err := sq.Subquery.GetFields(vcursor, bindVars)
 	if err != nil {
 		return nil, err
 	}

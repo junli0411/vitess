@@ -19,7 +19,7 @@ package logutil
 import (
 	"fmt"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/vt/log"
 )
 
 // ConsoleLogger is a Logger that uses glog directly to log, at the right level.
@@ -48,6 +48,16 @@ func (cl *ConsoleLogger) Warningf(format string, v ...interface{}) {
 // Errorf is part of the Logger interface
 func (cl *ConsoleLogger) Errorf(format string, v ...interface{}) {
 	cl.ErrorDepth(1, fmt.Sprintf(format, v...))
+}
+
+// Errorf2 is part of the Logger interface
+func (cl *ConsoleLogger) Errorf2(err error, format string, v ...interface{}) {
+	cl.ErrorDepth(1, fmt.Sprintf(format+": %+v", append(v, err)))
+}
+
+// Error is part of the Logger interface
+func (cl *ConsoleLogger) Error(err error) {
+	cl.ErrorDepth(1, fmt.Sprintf("%+v", err))
 }
 
 // Printf is part of the Logger interface

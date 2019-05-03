@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	"vitess.io/vitess/go/sqltypes"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 func TestCellLengthAndData(t *testing.T) {
@@ -463,6 +463,12 @@ func TestCellLengthAndData(t *testing.T) {
 		out: sqltypes.MakeTrusted(querypb.Type_DECIMAL,
 			[]byte("-1234567890.1234")),
 	}, {
+		typ:      TypeNewDecimal,
+		metadata: 14<<8 | 4,
+		data:     []byte{0x81, 0x0D, 0xFB, 0x38, 0xD2, 0x00, 0x01},
+		out: sqltypes.MakeTrusted(querypb.Type_DECIMAL,
+			[]byte("1234567890.0001")),
+	}, {
 		typ:      TypeBlob,
 		metadata: 1,
 		data:     []byte{0x3, 'a', 'b', 'c'},
@@ -538,7 +544,7 @@ func TestCellLengthAndData(t *testing.T) {
 
 		// Test CellValue.
 		out, l, err := CellValue(padded, 1, tcase.typ, tcase.metadata, tcase.styp)
-		if err != nil || l != len(tcase.data) || out.Type() != tcase.out.Type() || bytes.Compare(out.Raw(), tcase.out.Raw()) != 0 {
+		if err != nil || l != len(tcase.data) || out.Type() != tcase.out.Type() || !bytes.Equal(out.Raw(), tcase.out.Raw()) {
 			t.Errorf("testcase cellData(%v,%v) returned unexpected result: %v %v %v, was expecting %v %v <nil>", tcase.typ, tcase.data, out, l, err, tcase.out, len(tcase.data))
 		}
 	}

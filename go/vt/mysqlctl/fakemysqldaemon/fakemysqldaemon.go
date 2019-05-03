@@ -24,15 +24,16 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/vt/dbconnpool"
-	"github.com/youtube/vitess/go/vt/mysqlctl"
-	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/sync2"
+	"vitess.io/vitess/go/vt/dbconnpool"
+	"vitess.io/vitess/go/vt/mysqlctl"
+	"vitess.io/vitess/go/vt/mysqlctl/tmutils"
 
-	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
+	tabletmanagerdatapb "vitess.io/vitess/go/vt/proto/tabletmanagerdata"
 )
 
 // FakeMysqlDaemon implements MysqlDaemon and allows the user to fake
@@ -43,9 +44,6 @@ type FakeMysqlDaemon struct {
 
 	// appPool is set if db is set.
 	appPool *dbconnpool.ConnectionPool
-
-	// Mycnf will be returned by Cnf()
-	Mycnf *mysqlctl.Mycnf
 
 	// Running is used by Start / Shutdown
 	Running bool
@@ -78,9 +76,15 @@ type FakeMysqlDaemon struct {
 	// ReadOnly is the current value of the flag
 	ReadOnly bool
 
+	// SuperReadOnly is the current value of the flag
+	SuperReadOnly bool
+
 	// SetSlavePositionPos is matched against the input of SetSlavePosition.
 	// If it doesn't match, SetSlavePosition will return an error.
 	SetSlavePositionPos mysql.Position
+
+	// StartSlaveUntilAfterPos is matched against the input
+	StartSlaveUntilAfterPos mysql.Position
 
 	// SetMasterInput is matched against the input of SetMaster
 	// (as "%v:%v"). If it doesn't match, SetMaster will return an error.
@@ -128,12 +132,16 @@ type FakeMysqlDaemon struct {
 	FetchSuperQueryMap map[string]*sqltypes.Result
 
 	// BinlogPlayerEnabled is used by {Enable,Disable}BinlogPlayer
-	BinlogPlayerEnabled bool
+	BinlogPlayerEnabled sync2.AtomicBool
 
 	// SemiSyncMasterEnabled represents the state of rpl_semi_sync_master_enabled.
 	SemiSyncMasterEnabled bool
 	// SemiSyncSlaveEnabled represents the state of rpl_semi_sync_slave_enabled.
 	SemiSyncSlaveEnabled bool
+
+	// TimeoutHook is a func that can be called at the beginning of any method to fake a timeout.
+	// all a test needs to do is make it { return context.DeadlineExceeded }
+	TimeoutHook func() error
 }
 
 // NewFakeMysqlDaemon returns a FakeMysqlDaemon where mysqld appears
@@ -145,24 +153,14 @@ func NewFakeMysqlDaemon(db *fakesqldb.DB) *FakeMysqlDaemon {
 		Running: true,
 	}
 	if db != nil {
-		result.appPool = dbconnpool.NewConnectionPool("AppConnPool", 5, time.Minute)
-		result.appPool.Open(db.ConnParams(), stats.NewTimings(""))
+		result.appPool = dbconnpool.NewConnectionPool("AppConnPool", 5, time.Minute, 0)
+		result.appPool.Open(db.ConnParams(), stats.NewTimings("", "", ""))
 	}
 	return result
 }
 
-// Cnf is part of the MysqlDaemon interface
-func (fmd *FakeMysqlDaemon) Cnf() *mysqlctl.Mycnf {
-	return fmd.Mycnf
-}
-
-// TabletDir is part of the MysqlDaemon interface.
-func (fmd *FakeMysqlDaemon) TabletDir() string {
-	return ""
-}
-
 // Start is part of the MysqlDaemon interface
-func (fmd *FakeMysqlDaemon) Start(ctx context.Context, mysqldArgs ...string) error {
+func (fmd *FakeMysqlDaemon) Start(ctx context.Context, cnf *mysqlctl.Mycnf, mysqldArgs ...string) error {
 	if fmd.Running {
 		return fmt.Errorf("fake mysql daemon already running")
 	}
@@ -171,7 +169,7 @@ func (fmd *FakeMysqlDaemon) Start(ctx context.Context, mysqldArgs ...string) err
 }
 
 // Shutdown is part of the MysqlDaemon interface
-func (fmd *FakeMysqlDaemon) Shutdown(ctx context.Context, waitForMysqld bool) error {
+func (fmd *FakeMysqlDaemon) Shutdown(ctx context.Context, cnf *mysqlctl.Mycnf, waitForMysqld bool) error {
 	if !fmd.Running {
 		return fmt.Errorf("fake mysql daemon not running")
 	}
@@ -185,17 +183,17 @@ func (fmd *FakeMysqlDaemon) RunMysqlUpgrade() error {
 }
 
 // ReinitConfig is part of the MysqlDaemon interface
-func (fmd *FakeMysqlDaemon) ReinitConfig(ctx context.Context) error {
+func (fmd *FakeMysqlDaemon) ReinitConfig(ctx context.Context, cnf *mysqlctl.Mycnf) error {
 	return nil
 }
 
 // RefreshConfig is part of the MysqlDaemon interface
-func (fmd *FakeMysqlDaemon) RefreshConfig(ctx context.Context) error {
+func (fmd *FakeMysqlDaemon) RefreshConfig(ctx context.Context, cnf *mysqlctl.Mycnf) error {
 	return nil
 }
 
 // Wait is part of the MysqlDaemon interface.
-func (fmd *FakeMysqlDaemon) Wait(ctx context.Context) error {
+func (fmd *FakeMysqlDaemon) Wait(ctx context.Context, cnf *mysqlctl.Mycnf) error {
 	return nil
 }
 
@@ -245,6 +243,38 @@ func (fmd *FakeMysqlDaemon) SetReadOnly(on bool) error {
 	return nil
 }
 
+// SetSuperReadOnly is part of the MysqlDaemon interface
+func (fmd *FakeMysqlDaemon) SetSuperReadOnly(on bool) error {
+	fmd.SuperReadOnly = on
+	fmd.ReadOnly = on
+	return nil
+}
+
+// StartSlave is part of the MysqlDaemon interface.
+func (fmd *FakeMysqlDaemon) StartSlave(hookExtraEnv map[string]string) error {
+	return fmd.ExecuteSuperQueryList(context.Background(), []string{
+		"START SLAVE",
+	})
+}
+
+// StartSlaveUntilAfter is part of the MysqlDaemon interface.
+func (fmd *FakeMysqlDaemon) StartSlaveUntilAfter(ctx context.Context, pos mysql.Position) error {
+	if !reflect.DeepEqual(fmd.StartSlaveUntilAfterPos, pos) {
+		return fmt.Errorf("wrong pos for StartSlaveUntilAfter: expected %v got %v", fmd.SetSlavePositionPos, pos)
+	}
+
+	return fmd.ExecuteSuperQueryList(context.Background(), []string{
+		"START SLAVE UNTIL AFTER",
+	})
+}
+
+// StopSlave is part of the MysqlDaemon interface.
+func (fmd *FakeMysqlDaemon) StopSlave(hookExtraEnv map[string]string) error {
+	return fmd.ExecuteSuperQueryList(context.Background(), []string{
+		"STOP SLAVE",
+	})
+}
+
 // SetSlavePosition is part of the MysqlDaemon interface.
 func (fmd *FakeMysqlDaemon) SetSlavePosition(ctx context.Context, pos mysql.Position) error {
 	if !reflect.DeepEqual(fmd.SetSlavePositionPos, pos) {
@@ -263,11 +293,11 @@ func (fmd *FakeMysqlDaemon) SetMaster(ctx context.Context, masterHost string, ma
 	}
 	cmds := []string{}
 	if slaveStopBefore {
-		cmds = append(cmds, mysqlctl.SQLStopSlave)
+		cmds = append(cmds, "STOP SLAVE")
 	}
 	cmds = append(cmds, "FAKE SET MASTER")
 	if slaveStartAfter {
-		cmds = append(cmds, mysqlctl.SQLStartSlave)
+		cmds = append(cmds, "START SLAVE")
 	}
 	return fmd.ExecuteSuperQueryList(ctx, cmds)
 }
@@ -284,6 +314,9 @@ func (fmd *FakeMysqlDaemon) DemoteMaster() (mysql.Position, error) {
 
 // WaitMasterPos is part of the MysqlDaemon interface
 func (fmd *FakeMysqlDaemon) WaitMasterPos(_ context.Context, pos mysql.Position) error {
+	if fmd.TimeoutHook != nil {
+		return fmd.TimeoutHook()
+	}
 	if reflect.DeepEqual(fmd.WaitMasterPosition, pos) {
 		return nil
 	}
@@ -320,9 +353,9 @@ func (fmd *FakeMysqlDaemon) ExecuteSuperQueryList(ctx context.Context, queryList
 
 		// intercept some queries to update our status
 		switch query {
-		case mysqlctl.SQLStartSlave:
+		case "START SLAVE":
 			fmd.Replicating = true
-		case mysqlctl.SQLStopSlave:
+		case "STOP SLAVE":
 			fmd.Replicating = false
 		}
 	}
@@ -344,19 +377,13 @@ func (fmd *FakeMysqlDaemon) FetchSuperQuery(ctx context.Context, query string) (
 
 // EnableBinlogPlayback is part of the MysqlDaemon interface
 func (fmd *FakeMysqlDaemon) EnableBinlogPlayback() error {
-	if fmd.BinlogPlayerEnabled {
-		return fmt.Errorf("binlog player already enabled")
-	}
-	fmd.BinlogPlayerEnabled = true
+	fmd.BinlogPlayerEnabled.Set(true)
 	return nil
 }
 
 // DisableBinlogPlayback disable playback of binlog events
 func (fmd *FakeMysqlDaemon) DisableBinlogPlayback() error {
-	if fmd.BinlogPlayerEnabled {
-		return fmt.Errorf("binlog player already disabled")
-	}
-	fmd.BinlogPlayerEnabled = false
+	fmd.BinlogPlayerEnabled.Set(false)
 	return nil
 }
 
@@ -387,6 +414,16 @@ func (fmd *FakeMysqlDaemon) GetSchema(dbName string, tables, excludeTables []str
 	return tmutils.FilterTables(fmd.Schema, tables, excludeTables, includeViews)
 }
 
+// GetColumns is part of the MysqlDaemon interface
+func (fmd *FakeMysqlDaemon) GetColumns(dbName, table string) ([]string, error) {
+	return []string{}, nil
+}
+
+// GetPrimaryKeyColumns is part of the MysqlDaemon interface
+func (fmd *FakeMysqlDaemon) GetPrimaryKeyColumns(dbName, table string) ([]string, error) {
+	return []string{}, nil
+}
+
 // PreflightSchemaChange is part of the MysqlDaemon interface
 func (fmd *FakeMysqlDaemon) PreflightSchemaChange(dbName string, changes []string) ([]*tabletmanagerdatapb.SchemaChangeResult, error) {
 	if fmd.PreflightSchemaChangeResult == nil {
@@ -410,12 +447,12 @@ func (fmd *FakeMysqlDaemon) GetAppConnection(ctx context.Context) (*dbconnpool.P
 
 // GetDbaConnection is part of the MysqlDaemon interface.
 func (fmd *FakeMysqlDaemon) GetDbaConnection() (*dbconnpool.DBConnection, error) {
-	return dbconnpool.NewDBConnection(fmd.db.ConnParams(), stats.NewTimings(""))
+	return dbconnpool.NewDBConnection(fmd.db.ConnParams(), stats.NewTimings("", "", ""))
 }
 
 // GetAllPrivsConnection is part of the MysqlDaemon interface.
 func (fmd *FakeMysqlDaemon) GetAllPrivsConnection() (*dbconnpool.DBConnection, error) {
-	return dbconnpool.NewDBConnection(fmd.db.ConnParams(), stats.NewTimings(""))
+	return dbconnpool.NewDBConnection(fmd.db.ConnParams(), stats.NewTimings("", "", ""))
 }
 
 // SetSemiSyncEnabled is part of the MysqlDaemon interface.

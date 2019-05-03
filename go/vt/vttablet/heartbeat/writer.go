@@ -21,24 +21,25 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/vt/vterrors"
+
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/hack"
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqlescape"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/timer"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/dbconnpool"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/connpool"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqlescape"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/timer"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/dbconnpool"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/connpool"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 const (
@@ -56,7 +57,7 @@ const (
 // Writer runs on master tablets and writes heartbeats to the _vt.heartbeat
 // table at a regular interval, defined by heartbeat_interval.
 type Writer struct {
-	dbconfigs dbconfigs.DBConfigs
+	dbconfigs *dbconfigs.DBConfigs
 
 	enabled       bool
 	interval      time.Duration
@@ -89,7 +90,7 @@ func NewWriter(checker connpool.MySQLChecker, alias topodatapb.TabletAlias, conf
 }
 
 // InitDBConfig must be called before Init.
-func (w *Writer) InitDBConfig(dbcfgs dbconfigs.DBConfigs) {
+func (w *Writer) InitDBConfig(dbcfgs *dbconfigs.DBConfigs) {
 	w.dbconfigs = dbcfgs
 }
 
@@ -102,9 +103,9 @@ func (w *Writer) Init(target querypb.Target) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	log.Info("Initializing heartbeat table.")
-	w.dbName = sqlescape.EscapeID(w.dbconfigs.SidecarDBName)
+	w.dbName = sqlescape.EscapeID(w.dbconfigs.SidecarDBName.Get())
 	w.keyspaceShard = fmt.Sprintf("%s:%s", target.Keyspace, target.Shard)
-	err := w.initializeTables(&w.dbconfigs.Dba)
+	err := w.initializeTables(w.dbconfigs.DbaWithDB())
 	if err != nil {
 		w.recordError(err)
 		return err
@@ -127,7 +128,7 @@ func (w *Writer) Open() {
 		return
 	}
 	log.Info("Beginning heartbeat writes")
-	w.pool.Open(&w.dbconfigs.App, &w.dbconfigs.Dba, &w.dbconfigs.AppDebug)
+	w.pool.Open(w.dbconfigs.AppWithDB(), w.dbconfigs.DbaWithDB(), w.dbconfigs.AppDebugWithDB())
 	w.ticks.Start(func() { w.writeHeartbeat() })
 	w.isOpen = true
 }
@@ -155,9 +156,9 @@ func (w *Writer) Close() {
 // and we also execute them with an isolated connection that turns off the binlog and
 // is closed at the end.
 func (w *Writer) initializeTables(cp *mysql.ConnParams) error {
-	conn, err := dbconnpool.NewDBConnection(cp, stats.NewTimings(""))
+	conn, err := dbconnpool.NewDBConnection(cp, stats.NewTimings("", "", ""))
 	if err != nil {
-		return fmt.Errorf("Failed to create connection for heartbeat: %v", err)
+		return vterrors.Wrap(err, "Failed to create connection for heartbeat")
 	}
 	defer conn.Close()
 	statements := []string{
@@ -167,16 +168,16 @@ func (w *Writer) initializeTables(cp *mysql.ConnParams) error {
 	}
 	for _, s := range statements {
 		if _, err := conn.ExecuteFetch(s, 0, false); err != nil {
-			return fmt.Errorf("Failed to execute heartbeat init query: %v", err)
+			return vterrors.Wrap(err, "Failed to execute heartbeat init query")
 		}
 	}
 	insert, err := w.bindHeartbeatVars(sqlInsertInitialRow)
 	if err != nil {
-		return fmt.Errorf("Failed to bindHeartbeatVars initial heartbeat insert: %v", err)
+		return vterrors.Wrap(err, "Failed to bindHeartbeatVars initial heartbeat insert")
 	}
 	_, err = conn.ExecuteFetch(insert, 0, false)
 	if err != nil {
-		return fmt.Errorf("Failed to execute initial heartbeat insert: %v", err)
+		return vterrors.Wrap(err, "Failed to execute initial heartbeat insert")
 	}
 	writes.Add(1)
 	return nil
@@ -196,7 +197,7 @@ func (w *Writer) bindHeartbeatVars(query string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return hack.String(bound), nil
+	return bound, nil
 }
 
 // writeHeartbeat updates the heartbeat row for this tablet with the current time in nanoseconds.

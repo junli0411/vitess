@@ -19,14 +19,14 @@ package srvtopo
 import (
 	"sync"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/concurrency"
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/concurrency"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // FindAllTargets goes through all serving shards in the topology
@@ -50,7 +50,7 @@ func FindAllTargets(ctx context.Context, ts Server, cell string, tabletTypes []t
 			// Get SrvKeyspace for cell/keyspace.
 			ks, err := ts.GetSrvKeyspace(ctx, cell, keyspace)
 			if err != nil {
-				if err == topo.ErrNoNode {
+				if topo.IsErrType(err, topo.NoNode) {
 					// Possibly a race condition, or leftover
 					// crud in the topology service. Just log it.
 					log.Warningf("GetSrvKeyspace(%v, %v) returned ErrNoNode, skipping that SrvKeyspace", cell, keyspace)

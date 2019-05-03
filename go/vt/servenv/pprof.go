@@ -21,7 +21,7 @@ import (
 	"os"
 	"runtime/pprof"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/vt/log"
 )
 
 var (
@@ -29,7 +29,7 @@ var (
 )
 
 func init() {
-	onInit(func() {
+	OnInit(func() {
 		if *cpuProfile != "" {
 			f, err := os.Create(*cpuProfile)
 			if err != nil {

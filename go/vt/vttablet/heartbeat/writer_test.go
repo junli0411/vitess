@@ -22,12 +22,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/sqlescape"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/sqlescape"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 )
 
 var (
@@ -46,7 +46,7 @@ func TestCreateSchema(t *testing.T) {
 	defer db.Close()
 	tw := newTestWriter(db, mockNowFunc)
 	defer tw.Close()
-	writes.Set(0)
+	writes.Reset()
 
 	db.AddQuery(sqlTurnoffBinlog, &sqltypes.Result{})
 	db.AddQuery(fmt.Sprintf(sqlCreateHeartbeatTable, tw.dbName), &sqltypes.Result{})
@@ -74,8 +74,8 @@ func TestWriteHeartbeat(t *testing.T) {
 	tw := newTestWriter(db, mockNowFunc)
 	db.AddQuery(fmt.Sprintf("UPDATE %s.heartbeat SET ts=%d, tabletUid=%d WHERE keyspaceShard='%s'", tw.dbName, now.UnixNano(), tw.tabletAlias.Uid, tw.keyspaceShard), &sqltypes.Result{})
 
-	writes.Set(0)
-	writeErrors.Set(0)
+	writes.Reset()
+	writeErrors.Reset()
 
 	tw.writeHeartbeat()
 	if got, want := writes.Get(), int64(1); got != want {
@@ -93,8 +93,8 @@ func TestWriteHeartbeatError(t *testing.T) {
 
 	tw := newTestWriter(db, mockNowFunc)
 
-	writes.Set(0)
-	writeErrors.Set(0)
+	writes.Reset()
+	writeErrors.Reset()
 
 	tw.writeHeartbeat()
 	if got, want := writes.Get(), int64(0); got != want {
@@ -111,19 +111,15 @@ func newTestWriter(db *fakesqldb.DB, nowFunc func() time.Time) *Writer {
 	config.HeartbeatEnable = true
 	config.PoolNamePrefix = fmt.Sprintf("Pool-%d-", randID)
 
-	dbc := dbconfigs.DBConfigs{
-		App:           *db.ConnParams(),
-		Dba:           *db.ConnParams(),
-		SidecarDBName: "_vt",
-	}
+	dbc := dbconfigs.NewTestDBConfigs(*db.ConnParams(), *db.ConnParams(), "")
 
 	tw := NewWriter(&fakeMysqlChecker{},
 		topodatapb.TabletAlias{Cell: "test", Uid: 1111},
 		config)
-	tw.dbName = sqlescape.EscapeID(dbc.SidecarDBName)
+	tw.dbName = sqlescape.EscapeID(dbc.SidecarDBName.Get())
 	tw.keyspaceShard = "test:0"
 	tw.now = nowFunc
-	tw.pool.Open(&dbc.App, &dbc.Dba, &dbc.AppDebug)
+	tw.pool.Open(dbc.AppWithDB(), dbc.DbaWithDB(), dbc.AppDebugWithDB())
 
 	return tw
 }

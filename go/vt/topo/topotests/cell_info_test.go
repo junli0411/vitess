@@ -22,10 +22,10 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // This file tests the CellInfo part of the topo.Server API.
@@ -62,7 +62,7 @@ func TestCellInfo(t *testing.T) {
 	// Test update with no change.
 	if err := ts.UpdateCellInfoFields(ctx, cell, func(ci *topodatapb.CellInfo) error {
 		ci.ServerAddress = "bad address"
-		return topo.ErrNoUpdateNeeded
+		return topo.NewError(topo.NoUpdateNeeded, cell)
 	}); err != nil {
 		t.Fatalf("UpdateCellInfoFields failed: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestCellInfo(t *testing.T) {
 	if err := ts.DeleteCellInfo(ctx, newCell); err != nil {
 		t.Fatalf("DeleteCellInfo failed: %v", err)
 	}
-	if _, err := ts.GetCellInfo(ctx, newCell, true /*strongRead*/); err != topo.ErrNoNode {
+	if _, err := ts.GetCellInfo(ctx, newCell, true /*strongRead*/); !topo.IsErrType(err, topo.NoNode) {
 		t.Fatalf("GetCellInfo(non-existing cell) failed: %v", err)
 	}
 }

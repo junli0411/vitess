@@ -23,7 +23,7 @@ limitations under the License.
 // the environment. It also needs to call env.Close before exiting.
 //
 // Note: If you need to plug in any custom initialization/cleanup for
-// a vitess distribution, register them using onInit and onClose. A
+// a vitess distribution, register them using OnInit and onClose. A
 // clean way of achieving that is adding to this package a file with
 // an init() function that registers the hooks.
 package servenv
@@ -41,13 +41,13 @@ import (
 	// register the HTTP handlers for profiling
 	_ "net/http/pprof"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/event"
-	"github.com/youtube/vitess/go/netutil"
-	"github.com/youtube/vitess/go/stats"
+	"vitess.io/vitess/go/event"
+	"vitess.io/vitess/go/netutil"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/vt/log"
 
 	// register the proper init and shutdown hooks for logging
-	_ "github.com/youtube/vitess/go/vt/logutil"
+	_ "vitess.io/vitess/go/vt/logutil"
 )
 
 var (
@@ -55,9 +55,10 @@ var (
 	Port *int
 
 	// Flags to alter the behavior of the library.
-	lameduckPeriod = flag.Duration("lameduck-period", 50*time.Millisecond, "keep running at least this long after SIGTERM before stopping")
-	onTermTimeout  = flag.Duration("onterm_timeout", 10*time.Second, "wait no more than this for OnTermSync handlers before stopping")
-	memProfileRate = flag.Int("mem-profile-rate", 512*1024, "profile every n bytes allocated")
+	lameduckPeriod       = flag.Duration("lameduck-period", 50*time.Millisecond, "keep running at least this long after SIGTERM before stopping")
+	onTermTimeout        = flag.Duration("onterm_timeout", 10*time.Second, "wait no more than this for OnTermSync handlers before stopping")
+	memProfileRate       = flag.Int("mem-profile-rate", 512*1024, "profile every n bytes allocated")
+	mutexProfileFraction = flag.Int("mutex-profile-fraction", 0, "profile every n mutex contention events (see runtime.SetMutexProfileFraction)")
 
 	// mutex used to protect the Init function
 	mu sync.Mutex
@@ -89,6 +90,11 @@ func Init() {
 
 	runtime.MemProfileRate = *memProfileRate
 
+	if *mutexProfileFraction != 0 {
+		log.Infof("setting mutex profile fraction to %v", *mutexProfileFraction)
+		runtime.SetMutexProfileFraction(*mutexProfileFraction)
+	}
+
 	// We used to set this limit directly, but you pretty much have to
 	// use a root account to allow increasing a limit reliably. Dropping
 	// privileges is also tricky. The best strategy is to make a shell
@@ -98,13 +104,13 @@ func Init() {
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, fdLimit); err != nil {
 		log.Errorf("max-open-fds failed: %v", err)
 	}
-	fdl := stats.NewInt("MaxFds")
+	fdl := stats.NewGauge("MaxFds", "File descriptor limit")
 	fdl.Set(int64(fdLimit.Cur))
 
 	onInitHooks.Fire()
 }
 
-func populateListeningURL() {
+func populateListeningURL(port int32) {
 	host, err := netutil.FullyQualifiedHostname()
 	if err != nil {
 		host, err = os.Hostname()
@@ -114,14 +120,14 @@ func populateListeningURL() {
 	}
 	ListeningURL = url.URL{
 		Scheme: "http",
-		Host:   netutil.JoinHostPort(host, int32(*Port)),
+		Host:   netutil.JoinHostPort(host, port),
 		Path:   "/",
 	}
 }
 
-// onInit registers f to be run at the beginning of the app
+// OnInit registers f to be run at the beginning of the app
 // lifecycle. It should be called in an init() function.
-func onInit(f func()) {
+func OnInit(f func()) {
 	onInitHooks.Add(f)
 }
 

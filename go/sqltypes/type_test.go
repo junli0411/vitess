@@ -19,7 +19,7 @@ package sqltypes
 import (
 	"testing"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 func TestTypeValues(t *testing.T) {
@@ -192,7 +192,7 @@ func TestCategory(t *testing.T) {
 			}
 			matched = true
 		}
-		if typ == Null || typ == Decimal || typ == Expression {
+		if typ == Null || typ == Decimal || typ == Expression || typ == Bit {
 			if matched {
 				t.Errorf("%v matched more than one category", typ)
 			}

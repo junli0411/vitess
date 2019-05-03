@@ -22,18 +22,18 @@ import (
 
 	"golang.org/x/net/context"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/timer"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/schemamanager"
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
-	"github.com/youtube/vitess/go/vt/wrangler"
+	"vitess.io/vitess/go/timer"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/schemamanager"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
+	"vitess.io/vitess/go/vt/wrangler"
 )
 
 var (
 	schemaChangeDir           = flag.String("schema_change_dir", "", "directory contains schema changes for all keyspaces. Each keyspace has its own directory and schema changes are expected to live in '$KEYSPACE/input' dir. e.g. test_keyspace/input/*sql, each sql file represents a schema change")
-	schemaChangeController    = flag.String("schema_change_controller", "", "schema change controller is responsible for finding schema changes and responsing schema change events")
+	schemaChangeController    = flag.String("schema_change_controller", "", "schema change controller is responsible for finding schema changes and responding to schema change events")
 	schemaChangeCheckInterval = flag.Int("schema_change_check_interval", 60, "this value decides how often we check schema change dir, in seconds")
 	schemaChangeUser          = flag.String("schema_change_user", "", "The user who submits this schema change.")
 	schemaChangeSlaveTimeout  = flag.Duration("schema_change_slave_timeout", 10*time.Second, "how long to wait for slaves to receive the schema change")

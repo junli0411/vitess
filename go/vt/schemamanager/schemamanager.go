@@ -21,10 +21,10 @@ import (
 	"fmt"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	"vitess.io/vitess/go/vt/log"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 const (
@@ -132,7 +132,7 @@ func Run(ctx context.Context, controller Controller, executor Executor) error {
 	}
 	if result.ExecutorErr != "" || len(result.FailedShards) > 0 {
 		out, _ := json.MarshalIndent(result, "", "  ")
-		return fmt.Errorf("Schema change failed, ExecuteResult: %v\n", string(out))
+		return fmt.Errorf("schema change failed, ExecuteResult: %v", string(out))
 	}
 	return nil
 }

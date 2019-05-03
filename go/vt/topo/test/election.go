@@ -22,7 +22,7 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo"
 )
 
 func waitForMasterID(t *testing.T, mp topo.MasterParticipation, expected string) {
@@ -143,7 +143,7 @@ func checkElection(t *testing.T, ts *topo.Server) {
 	// does, for instance. There is a go routine that runs
 	// WaitForMastership and needs to exit cleanly at the end.
 	_, err = mp2.WaitForMastership()
-	if err != topo.ErrInterrupted {
-		t.Errorf("wrong error returned by WaitForMastership, got %v expected %v", err, topo.ErrInterrupted)
+	if !topo.IsErrType(err, topo.Interrupted) {
+		t.Errorf("wrong error returned by WaitForMastership, got %v expected %v", err, topo.NewError(topo.Interrupted, ""))
 	}
 }

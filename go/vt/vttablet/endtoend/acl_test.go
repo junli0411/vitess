@@ -22,11 +22,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/vttablet/endtoend/framework"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/rules"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/vttablet/endtoend/framework"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/rules"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 func TestTableACL(t *testing.T) {
@@ -189,12 +189,12 @@ func TestQueryRules(t *testing.T) {
 	query := "select * from vitess_test where intval=:asdfg"
 	bv := map[string]*querypb.BindVariable{"asdfg": sqltypes.Int64BindVariable(1)}
 	_, err = client.Execute(query, bv)
-	want = "disallowed due to rule: disallow bindvar 'asdfg', CallerID: dev"
+	want = "disallowed due to rule: disallow bindvar 'asdfg' (CallerID: dev)"
 	if err == nil || err.Error() != want {
 		t.Errorf("Error: %v, want %s", err, want)
 	}
 	_, err = client.StreamExecute(query, bv)
-	want = "disallowed due to rule: disallow bindvar 'asdfg', CallerID: dev"
+	want = "disallowed due to rule: disallow bindvar 'asdfg' (CallerID: dev)"
 	if err == nil || err.Error() != want {
 		t.Errorf("Error: %v, want %s", err, want)
 	}

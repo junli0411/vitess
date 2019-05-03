@@ -29,8 +29,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqltypes"
 )
 
 const appendEntry = -1
@@ -70,6 +70,8 @@ type DB struct {
 	name string
 	// isConnFail trigger a panic in the connection handler.
 	isConnFail bool
+	// connDelay causes a sleep in the connection handler
+	connDelay time.Duration
 	// shouldClose, if true, tells ComQuery() to close the connection when
 	// processing the next query. This will trigger a MySQL client error with
 	// errno 2013 ("server lost").
@@ -162,7 +164,7 @@ func New(t *testing.T) *DB {
 	authServer := &mysql.AuthServerNone{}
 
 	// Start listening.
-	db.listener, err = mysql.NewListener("unix", socketFile, authServer, db)
+	db.listener, err = mysql.NewListener("unix", socketFile, authServer, db, 0, 0)
 	if err != nil {
 		t.Fatalf("NewListener failed: %v", err)
 	}
@@ -288,6 +290,10 @@ func (db *DB) NewConnection(c *mysql.Conn) {
 		panic(fmt.Errorf("simulating a connection failure"))
 	}
 
+	if db.connDelay != 0 {
+		time.Sleep(db.connDelay)
+	}
+
 	if conn, ok := db.connections[c.ConnectionID]; ok {
 		db.t.Fatalf("BUG: connection with id: %v is already active. existing conn: %v new conn: %v", c.ConnectionID, conn, c)
 	}
@@ -312,6 +318,11 @@ func (db *DB) ConnectionClosed(c *mysql.Conn) {
 // ComQuery is part of the mysql.Handler interface.
 func (db *DB) ComQuery(c *mysql.Conn, query string, callback func(*sqltypes.Result) error) error {
 	return db.Handler.HandleQuery(c, query, callback)
+}
+
+// WarningCount is part of the mysql.Handler interface.
+func (db *DB) WarningCount(c *mysql.Conn) uint16 {
+	return 0
 }
 
 // HandleQuery is the default implementation of the QueryHandler interface
@@ -428,7 +439,7 @@ func (db *DB) comQueryOrdered(query string) (*sqltypes.Result, error) {
 // AddQuery adds a query and its expected result.
 func (db *DB) AddQuery(query string, expectedResult *sqltypes.Result) *ExpectedResult {
 	if len(expectedResult.Rows) > 0 && len(expectedResult.Fields) == 0 {
-		panic(fmt.Errorf("Please add Fields to this Result so it's valid: %v", query))
+		panic(fmt.Errorf("please add Fields to this Result so it's valid: %v", query))
 	}
 	resultCopy := &sqltypes.Result{}
 	*resultCopy = *expectedResult
@@ -460,7 +471,7 @@ func (db *DB) SetBeforeFunc(query string, f func()) {
 // case-insensitive matching mode.
 func (db *DB) AddQueryPattern(queryPattern string, expectedResult *sqltypes.Result) {
 	if len(expectedResult.Rows) > 0 && len(expectedResult.Fields) == 0 {
-		panic(fmt.Errorf("Please add Fields to this Result so it's valid: %v", queryPattern))
+		panic(fmt.Errorf("please add Fields to this Result so it's valid: %v", queryPattern))
 	}
 	expr := regexp.MustCompile("(?is)^" + queryPattern + "$")
 	result := *expectedResult
@@ -515,6 +526,13 @@ func (db *DB) DisableConnFail() {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	db.isConnFail = false
+}
+
+// SetConnDelay delays connections to this fake DB for the given duration
+func (db *DB) SetConnDelay(d time.Duration) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.connDelay = d
 }
 
 // EnableShouldClose closes the connection when processing the next query.

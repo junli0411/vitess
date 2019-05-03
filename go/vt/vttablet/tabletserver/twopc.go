@@ -20,23 +20,22 @@ import (
 	"fmt"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/hack"
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqlescape"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/dbconnpool"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/connpool"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqlescape"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/dbconnpool"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/connpool"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 const (
@@ -130,7 +129,7 @@ func NewTwoPC(readPool *connpool.Pool) *TwoPC {
 // are not present, they are created.
 func (tpc *TwoPC) Init(sidecarDBName string, dbaparams *mysql.ConnParams) error {
 	dbname := sqlescape.EscapeID(sidecarDBName)
-	conn, err := dbconnpool.NewDBConnection(dbaparams, stats.NewTimings(""))
+	conn, err := dbconnpool.NewDBConnection(dbaparams, stats.NewTimings("", "", ""))
 	if err != nil {
 		return err
 	}
@@ -201,8 +200,8 @@ func (tpc *TwoPC) Init(sidecarDBName string, dbaparams *mysql.ConnParams) error 
 }
 
 // Open starts the TwoPC service.
-func (tpc *TwoPC) Open(dbconfigs dbconfigs.DBConfigs) {
-	tpc.readPool.Open(&dbconfigs.App, &dbconfigs.Dba, &dbconfigs.AppDebug)
+func (tpc *TwoPC) Open(dbconfigs *dbconfigs.DBConfigs) {
+	tpc.readPool.Open(dbconfigs.AppWithDB(), dbconfigs.DbaWithDB(), dbconfigs.DbaWithDB())
 }
 
 // Close closes the TwoPC service.
@@ -233,11 +232,11 @@ func (tpc *TwoPC) SaveRedo(ctx context.Context, conn *TxConnection, dtid string,
 	extras := map[string]sqlparser.Encodable{
 		"vals": sqlparser.InsertValues(rows),
 	}
-	b, err := tpc.insertRedoStmt.GenerateQuery(nil, extras)
+	q, err := tpc.insertRedoStmt.GenerateQuery(nil, extras)
 	if err != nil {
 		return err
 	}
-	_, err = conn.Exec(ctx, hack.String(b), 1, false)
+	_, err = conn.Exec(ctx, q, 1, false)
 	return err
 }
 
@@ -361,11 +360,11 @@ func (tpc *TwoPC) CreateTransaction(ctx context.Context, conn *TxConnection, dti
 	extras := map[string]sqlparser.Encodable{
 		"vals": sqlparser.InsertValues(rows),
 	}
-	b, err := tpc.insertParticipants.GenerateQuery(nil, extras)
+	q, err := tpc.insertParticipants.GenerateQuery(nil, extras)
 	if err != nil {
 		return err
 	}
-	_, err = conn.Exec(ctx, hack.String(b), 1, false)
+	_, err = conn.Exec(ctx, q, 1, false)
 	return err
 }
 
@@ -422,11 +421,11 @@ func (tpc *TwoPC) ReadTransaction(ctx context.Context, dtid string) (*querypb.Tr
 	result.Dtid = qr.Rows[0][0].ToString()
 	st, err := sqltypes.ToInt64(qr.Rows[0][1])
 	if err != nil {
-		return nil, fmt.Errorf("Error parsing state for dtid %s: %v", dtid, err)
+		return nil, vterrors.Wrapf(err, "Error parsing state for dtid %s", dtid)
 	}
 	result.State = querypb.TransactionState(st)
 	if result.State < querypb.TransactionState_PREPARE || result.State > querypb.TransactionState_ROLLBACK {
-		return nil, fmt.Errorf("Unexpected state for dtid %s: %v", dtid, result.State)
+		return nil, fmt.Errorf("unexpected state for dtid %s: %v", dtid, result.State)
 	}
 	// A failure in time parsing will show up as a very old time,
 	// which is harmless.
@@ -533,17 +532,17 @@ func (tpc *TwoPC) ReadAllTransactions(ctx context.Context) ([]*DistributedTx, er
 }
 
 func (tpc *TwoPC) exec(ctx context.Context, conn *TxConnection, pq *sqlparser.ParsedQuery, bindVars map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
-	b, err := pq.GenerateQuery(bindVars, nil)
+	q, err := pq.GenerateQuery(bindVars, nil)
 	if err != nil {
 		return nil, err
 	}
-	return conn.Exec(ctx, hack.String(b), 1, false)
+	return conn.Exec(ctx, q, 1, false)
 }
 
 func (tpc *TwoPC) read(ctx context.Context, conn *connpool.DBConn, pq *sqlparser.ParsedQuery, bindVars map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
-	b, err := pq.GenerateQuery(bindVars, nil)
+	q, err := pq.GenerateQuery(bindVars, nil)
 	if err != nil {
 		return nil, err
 	}
-	return conn.Exec(ctx, hack.String(b), 10000, false)
+	return conn.Exec(ctx, q, 10000, false)
 }

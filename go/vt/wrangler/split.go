@@ -23,13 +23,13 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/grpcclient"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletconn"
+	"vitess.io/vitess/go/vt/grpcclient"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vttablet/tabletconn"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 const (
@@ -48,7 +48,7 @@ func (wr *Wrangler) SetSourceShards(ctx context.Context, keyspace, shard string,
 
 	// Insert their KeyRange in the SourceShards array.
 	// We use a linear 0-based id, that matches what worker/split_clone.go
-	// inserts into _vt.blp_checkpoint.
+	// inserts into _vt.vreplication.
 	// We want to guarantee sourceShards[i] is using sources[i],
 	// So iterating over the sourceTablets map would be a bad idea.
 	sourceShards := make([]*topodatapb.Shard_SourceShard, len(sourceTablets))
@@ -68,7 +68,7 @@ func (wr *Wrangler) SetSourceShards(ctx context.Context, keyspace, shard string,
 		// If the shard already has sources, maybe it's already been restored,
 		// so let's be safe and abort right here.
 		if len(si.SourceShards) > 0 {
-			return fmt.Errorf("Shard %v/%v already has SourceShards, not overwriting them (full record: %v)", keyspace, shard, *si.Shard)
+			return fmt.Errorf("shard %v/%v already has SourceShards, not overwriting them (full record: %v)", keyspace, shard, *si.Shard)
 		}
 
 		si.SourceShards = sourceShards

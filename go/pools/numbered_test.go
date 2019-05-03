@@ -17,6 +17,7 @@ limitations under the License.
 package pools
 
 import (
+	"math/rand"
 	"strings"
 	"testing"
 	"time"
@@ -40,18 +41,18 @@ func TestNumbered(t *testing.T) {
 	if v.(int64) != id {
 		t.Errorf("want %v, got %v", id, v.(int64))
 	}
-	if v, err = p.Get(id, "test1"); err.Error() != "in use: test" {
+	if _, err = p.Get(id, "test1"); err.Error() != "in use: test" {
 		t.Errorf("want 'in use: test', got '%v'", err)
 	}
 	p.Put(id)
-	if v, err = p.Get(1, "test2"); err.Error() != "not found" {
+	if _, err = p.Get(1, "test2"); err.Error() != "not found" {
 		t.Errorf("want 'not found', got '%v'", err)
 	}
 	p.Unregister(1, "test") // Should not fail
 	p.Unregister(0, "test")
 	// p is now empty
 
-	if v, err = p.Get(0, "test3"); !(strings.HasPrefix(err.Error(), "ended at") && strings.HasSuffix(err.Error(), "(test)")) {
+	if _, err = p.Get(0, "test3"); !(strings.HasPrefix(err.Error(), "ended at") && strings.HasSuffix(err.Error(), "(test)")) {
 		t.Errorf("want prefix 'ended at' and suffix '(test'), got '%v'", err)
 	}
 
@@ -70,7 +71,7 @@ func TestNumbered(t *testing.T) {
 	if num := len(vals); num != 2 {
 		t.Errorf("want 2, got %v", num)
 	}
-	if v, err = p.Get(vals[0].(int64), "test1"); err.Error() != "in use: by outdated" {
+	if _, err = p.Get(vals[0].(int64), "test1"); err.Error() != "in use: by outdated" {
 		t.Errorf("want 'in use: by outdated', got '%v'", err)
 	}
 	for _, v := range vals {
@@ -84,7 +85,7 @@ func TestNumbered(t *testing.T) {
 	if len(vals) != 1 {
 		t.Errorf("want 1, got %v", len(vals))
 	}
-	if v, err = p.Get(vals[0].(int64), "test1"); err.Error() != "in use: by idle" {
+	if _, err = p.Get(vals[0].(int64), "test1"); err.Error() != "in use: by idle" {
 		t.Errorf("want 'in use: by idle', got '%v'", err)
 	}
 	if vals[0].(int64) != 3 {
@@ -102,4 +103,36 @@ func TestNumbered(t *testing.T) {
 		p.Unregister(2, "test")
 	}()
 	p.WaitForEmpty()
+}
+
+/*
+go test --test.run=XXX --test.bench=. --test.benchtime=10s
+
+golang.org/x/tools/cmd/benchcmp /tmp/bad.out /tmp/good.out
+
+benchmark                                 old ns/op     new ns/op     delta
+BenchmarkRegisterUnregister-8             667           596           -10.64%
+BenchmarkRegisterUnregisterParallel-8     2430          1752          -27.90%
+*/
+func BenchmarkRegisterUnregister(b *testing.B) {
+	p := NewNumbered()
+	id := int64(1)
+	val := "foobarbazdummyval"
+	for i := 0; i < b.N; i++ {
+		p.Register(id, val, false)
+		p.Unregister(id, "some reason")
+	}
+}
+
+func BenchmarkRegisterUnregisterParallel(b *testing.B) {
+	p := NewNumbered()
+	val := "foobarbazdummyval"
+	b.SetParallelism(200)
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			id := rand.Int63()
+			p.Register(id, val, false)
+			p.Unregister(id, "some reason")
+		}
+	})
 }

@@ -21,18 +21,20 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/youtube/vitess/go/json2"
-	"github.com/youtube/vitess/go/vt/grpcclient"
-	"github.com/youtube/vitess/go/vt/key"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice"
-	"github.com/youtube/vitess/go/vt/vttablet/sandboxconn"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletconn"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/json2"
+	"vitess.io/vitess/go/vt/grpcclient"
+	"vitess.io/vitess/go/vt/key"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/queryservice"
+	"vitess.io/vitess/go/vt/vttablet/sandboxconn"
+	"vitess.io/vitess/go/vt/vttablet/tabletconn"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vschemapb "github.com/youtube/vitess/go/vt/proto/vschema"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vschemapb "vitess.io/vitess/go/vt/proto/vschema"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 // sandbox_test.go provides a sandbox for unit testing VTGate.
@@ -41,12 +43,14 @@ const (
 	KsTestSharded             = "TestSharded"
 	KsTestUnsharded           = "TestUnsharded"
 	KsTestUnshardedServedFrom = "TestUnshardedServedFrom"
+	KsTestBadVSchema          = "TestXBadVSchema"
 )
 
 func init() {
 	ksToSandbox = make(map[string]*sandbox)
 	createSandbox(KsTestSharded)
 	createSandbox(KsTestUnsharded)
+	createSandbox(KsTestBadVSchema)
 	tabletconn.RegisterDialer("sandbox", sandboxDialer)
 	flag.Set("tablet_protocol", "sandbox")
 }
@@ -217,6 +221,22 @@ func createUnshardedKeyspace() (*topodatapb.SrvKeyspace, error) {
 
 // sandboxTopo satisfies the srvtopo.Server interface
 type sandboxTopo struct {
+	topoServer *topo.Server
+}
+
+// newSandboxForCells creates a new topo with a backing memory topo for
+// the given cells.
+//
+// when this version is used, WatchSrvVSchema can properly simulate watches
+func newSandboxForCells(cells []string) *sandboxTopo {
+	return &sandboxTopo{
+		topoServer: memorytopo.NewServer(cells...),
+	}
+}
+
+// GetTopoServer is part of the srvtopo.Server interface
+func (sct *sandboxTopo) GetTopoServer() (*topo.Server, error) {
+	return sct.topoServer, nil
 }
 
 // GetSrvKeyspaceNames is part of the srvtopo.Server interface.
@@ -233,6 +253,9 @@ func (sct *sandboxTopo) GetSrvKeyspaceNames(ctx context.Context, cell string) ([
 // GetSrvKeyspace is part of the srvtopo.Server interface.
 func (sct *sandboxTopo) GetSrvKeyspace(ctx context.Context, cell, keyspace string) (*topodatapb.SrvKeyspace, error) {
 	sand := getSandbox(keyspace)
+	if sand == nil {
+		return nil, fmt.Errorf("topo error GetSrvKeyspace")
+	}
 	sand.sandmu.Lock()
 	defer sand.sandmu.Unlock()
 	if sand.SrvKeyspaceCallback != nil {
@@ -268,8 +291,27 @@ func (sct *sandboxTopo) GetSrvKeyspace(ctx context.Context, cell, keyspace strin
 }
 
 // WatchSrvVSchema is part of the srvtopo.Server interface.
+//
+// If the sandbox was created with a backing topo service, piggy back on it
+// to properly simulate watches, otherwise just immediately call back the
+// caller.
 func (sct *sandboxTopo) WatchSrvVSchema(ctx context.Context, cell string, callback func(*vschemapb.SrvVSchema, error)) {
-	callback(getSandboxSrvVSchema(), nil)
+	srvVSchema := getSandboxSrvVSchema()
+
+	if sct.topoServer == nil {
+		callback(srvVSchema, nil)
+		return
+	}
+
+	sct.topoServer.UpdateSrvVSchema(ctx, cell, srvVSchema)
+	current, updateChan, _ := sct.topoServer.WatchSrvVSchema(ctx, cell)
+	callback(current.Value, nil)
+	go func() {
+		for {
+			update := <-updateChan
+			callback(update.Value, update.Err)
+		}
+	}()
 }
 
 func sandboxDialer(tablet *topodatapb.Tablet, failFast grpcclient.FailFast) (queryservice.QueryService, error) {

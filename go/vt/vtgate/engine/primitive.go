@@ -22,20 +22,21 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/vtgate/vindexes"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/key"
+	"vitess.io/vitess/go/vt/srvtopo"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
-// SeqVarName is a reserved bind var name for sequence values.
-const SeqVarName = "__seq"
-
-// ListVarName is a reserved bind var name for list vars.
-// This is used for sending different IN clause values
-// to different shards.
-const ListVarName = "__vals"
+const (
+	// SeqVarName is a reserved bind var name for sequence values.
+	SeqVarName = "__seq"
+	// ListVarName is a reserved bind var name for list vars.
+	// This is used for sending different IN clause values
+	// to different shards.
+	ListVarName = "__vals"
+)
 
 // VCursor defines the interface the engine will use
 // to execute routes.
@@ -43,19 +44,25 @@ type VCursor interface {
 	// Context returns the context of the current request.
 	Context() context.Context
 
+	// SetContextTimeout updates the context and sets a timeout.
+	SetContextTimeout(timeout time.Duration) context.CancelFunc
+
+	// RecordWarning stores the given warning in the current session
+	RecordWarning(warning *querypb.QueryWarning)
+
 	// V3 functions.
 	Execute(method string, query string, bindvars map[string]*querypb.BindVariable, isDML bool) (*sqltypes.Result, error)
 	ExecuteAutocommit(method string, query string, bindvars map[string]*querypb.BindVariable, isDML bool) (*sqltypes.Result, error)
+	AutocommitApproval() bool
 
 	// Shard-level functions.
-	ExecuteMultiShard(keyspace string, shardQueries map[string]*querypb.BoundQuery, isDML, canAutocommit bool) (*sqltypes.Result, error)
-	ExecuteStandalone(query string, bindvars map[string]*querypb.BindVariable, keyspace, shard string) (*sqltypes.Result, error)
-	StreamExecuteMulti(query string, keyspace string, shardVars map[string]map[string]*querypb.BindVariable, callback func(reply *sqltypes.Result) error) error
+	ExecuteMultiShard(rss []*srvtopo.ResolvedShard, queries []*querypb.BoundQuery, isDML, canAutocommit bool) (*sqltypes.Result, []error)
+	ExecuteStandalone(query string, bindvars map[string]*querypb.BindVariable, rs *srvtopo.ResolvedShard) (*sqltypes.Result, error)
+	StreamExecuteMulti(query string, rss []*srvtopo.ResolvedShard, bindVars []map[string]*querypb.BindVariable, callback func(reply *sqltypes.Result) error) error
 
-	// Topo functions.
-	GetKeyspaceShards(vkeyspace *vindexes.Keyspace) (string, []*topodatapb.ShardReference, error)
-	GetShardForKeyspaceID(allShards []*topodatapb.ShardReference, keyspaceID []byte) (string, error)
-	GetShardsForKsids(allShards []*topodatapb.ShardReference, ksids vindexes.Ksids) ([]string, error)
+	// Resolver methods, from key.Destination to srvtopo.ResolvedShard.
+	// Will replace all of the Topo functions.
+	ResolveDestinations(keyspace string, ids []*querypb.Value, destinations []key.Destination) ([]*srvtopo.ResolvedShard, [][]*querypb.Value, error)
 }
 
 // Plan represents the execution strategy for a given query.
@@ -116,7 +123,8 @@ func (p *Plan) Size() int {
 // Primitive is the interface that needs to be satisfied by
 // all primitives of a plan.
 type Primitive interface {
-	Execute(vcursor VCursor, bindVars, joinvars map[string]*querypb.BindVariable, wantfields bool) (*sqltypes.Result, error)
-	StreamExecute(vcursor VCursor, bindVars, joinvars map[string]*querypb.BindVariable, wantields bool, callback func(*sqltypes.Result) error) error
-	GetFields(vcursor VCursor, bindVars, joinvars map[string]*querypb.BindVariable) (*sqltypes.Result, error)
+	RouteType() string
+	Execute(vcursor VCursor, bindVars map[string]*querypb.BindVariable, wantfields bool) (*sqltypes.Result, error)
+	StreamExecute(vcursor VCursor, bindVars map[string]*querypb.BindVariable, wantields bool, callback func(*sqltypes.Result) error) error
+	GetFields(vcursor VCursor, bindVars map[string]*querypb.BindVariable) (*sqltypes.Result, error)
 }

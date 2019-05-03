@@ -17,21 +17,21 @@ limitations under the License.
 package tabletenv
 
 import (
-	"bytes"
 	"fmt"
 	"html/template"
+	"io"
 	"net/url"
 	"strings"
 	"time"
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/streamlog"
-	"github.com/youtube/vitess/go/vt/callerid"
-	"github.com/youtube/vitess/go/vt/callinfo"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/streamlog"
+	"vitess.io/vitess/go/vt/callerid"
+	"vitess.io/vitess/go/vt/callinfo"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 const (
@@ -103,7 +103,7 @@ func (stats *LogStats) AddRewrittenSQL(sql string, start time.Time) {
 	stats.QuerySources |= QuerySourceMySQL
 	stats.NumberOfQueries++
 	stats.rewrittenSqls = append(stats.rewrittenSqls, sql)
-	stats.MysqlResponseTime += time.Now().Sub(start)
+	stats.MysqlResponseTime += time.Since(start)
 }
 
 // TotalTime returns how long this query has been running
@@ -131,56 +131,6 @@ func (stats *LogStats) SizeOfResponse() int {
 		}
 	}
 	return size
-}
-
-// FmtBindVariables returns the map of bind variables as a string or a json
-// string depending on the streamlog.QueryLogFormat value. If RedactDebugUIQueries
-// is true then this returns the string "[REDACTED]"
-//
-// For values that are strings or byte slices it only reports their type
-// and length unless full is true.
-func (stats *LogStats) FmtBindVariables(full bool) string {
-	if *streamlog.RedactDebugUIQueries {
-		return "\"[REDACTED]\""
-	}
-
-	var out map[string]*querypb.BindVariable
-	if full {
-		out = stats.BindVariables
-	} else {
-		// NOTE(szopa): I am getting rid of potentially large bind
-		// variables.
-		out = make(map[string]*querypb.BindVariable)
-		for k, v := range stats.BindVariables {
-			if sqltypes.IsIntegral(v.Type) || sqltypes.IsFloat(v.Type) {
-				out[k] = v
-			} else {
-				out[k] = sqltypes.StringBindVariable(fmt.Sprintf("%v bytes", len(v.Value)))
-			}
-		}
-	}
-
-	if *streamlog.QueryLogFormat == streamlog.QueryLogFormatJSON {
-		var buf bytes.Buffer
-		buf.WriteString("{")
-		first := true
-		for k, v := range out {
-			if !first {
-				buf.WriteString(", ")
-			} else {
-				first = false
-			}
-			if sqltypes.IsIntegral(v.Type) || sqltypes.IsFloat(v.Type) {
-				fmt.Fprintf(&buf, "%q: {\"type\": %q, \"value\": %v}", k, v.Type, string(v.Value))
-			} else {
-				fmt.Fprintf(&buf, "%q: {\"type\": %q, \"value\": %q}", k, v.Type, string(v.Value))
-			}
-		}
-		buf.WriteString("}")
-		return buf.String()
-	}
-
-	return fmt.Sprintf("%v", out)
 }
 
 // FmtQuerySources returns a comma separated list of query
@@ -218,27 +168,34 @@ func (stats *LogStats) ErrorStr() string {
 	return ""
 }
 
-// RemoteAddrUsername returns some parts of CallInfo if set
-func (stats *LogStats) RemoteAddrUsername() (string, string) {
+// CallInfo returns some parts of CallInfo if set
+func (stats *LogStats) CallInfo() (string, string) {
 	ci, ok := callinfo.FromContext(stats.Ctx)
 	if !ok {
 		return "", ""
 	}
-	return ci.RemoteAddr(), ci.Username()
+	return ci.Text(), ci.Username()
 }
 
-// Format returns a tab separated list of logged fields.
-func (stats *LogStats) Format(params url.Values) string {
+// Logf formats the log record to the given writer, either as
+// tab-separated list of logged fields or as JSON.
+func (stats *LogStats) Logf(w io.Writer, params url.Values) error {
 	rewrittenSQL := "[REDACTED]"
+	formattedBindVars := "\"[REDACTED]\""
+
 	if !*streamlog.RedactDebugUIQueries {
 		rewrittenSQL = stats.RewrittenSQL()
+
+		_, fullBindParams := params["full"]
+		formattedBindVars = sqltypes.FormatBindVariables(
+			stats.BindVariables,
+			fullBindParams,
+			*streamlog.QueryLogFormat == streamlog.QueryLogFormatJSON,
+		)
 	}
 
-	_, fullBindParams := params["full"]
-	formattedBindVars := stats.FmtBindVariables(fullBindParams)
-
 	// TODO: remove username here we fully enforce immediate caller id
-	remoteAddr, username := stats.RemoteAddrUsername()
+	callInfo, username := stats.CallInfo()
 
 	// Valid options for the QueryLogFormat are text or json
 	var fmtString string
@@ -246,18 +203,19 @@ func (stats *LogStats) Format(params url.Values) string {
 	case streamlog.QueryLogFormatText:
 		fmtString = "%v\t%v\t%v\t'%v'\t'%v'\t%v\t%v\t%.6f\t%v\t%q\t%v\t%v\t%q\t%v\t%.6f\t%.6f\t%v\t%v\t%q\t\n"
 	case streamlog.QueryLogFormatJSON:
-		fmtString = "{\"Method\": %q, \"RemoteAddr\": %q, \"Username\": %q, \"ImmediateCaller\": %q, \"Effective Caller\": %q, \"Start\": \"%v\", \"End\": \"%v\", \"TotalTime\": %.6f, \"PlanType\": %q, \"OriginalSQL\": %q, \"BindVars\": %v, \"Queries\": %v, \"RewrittenSQL\": %q, \"QuerySources\": %q, \"MysqlTime\": %.6f, \"ConnWaitTime\": %.6f, \"RowsAffected\": %v, \"ResponseSize\": %v, \"Error\": %q}\n"
+		fmtString = "{\"Method\": %q, \"CallInfo\": %q, \"Username\": %q, \"ImmediateCaller\": %q, \"Effective Caller\": %q, \"Start\": \"%v\", \"End\": \"%v\", \"TotalTime\": %.6f, \"PlanType\": %q, \"OriginalSQL\": %q, \"BindVars\": %v, \"Queries\": %v, \"RewrittenSQL\": %q, \"QuerySources\": %q, \"MysqlTime\": %.6f, \"ConnWaitTime\": %.6f, \"RowsAffected\": %v, \"ResponseSize\": %v, \"Error\": %q}\n"
 	}
 
-	return fmt.Sprintf(
+	_, err := fmt.Fprintf(
+		w,
 		fmtString,
 		stats.Method,
-		remoteAddr,
+		callInfo,
 		username,
 		stats.ImmediateCaller(),
 		stats.EffectiveCaller(),
-		stats.StartTime.Format(time.StampMicro),
-		stats.EndTime.Format(time.StampMicro),
+		stats.StartTime.Format("2006-01-02 15:04:05.000000"),
+		stats.EndTime.Format("2006-01-02 15:04:05.000000"),
 		stats.TotalTime().Seconds(),
 		stats.PlanType,
 		stats.OriginalSQL,
@@ -271,4 +229,5 @@ func (stats *LogStats) Format(params url.Values) string {
 		stats.SizeOfResponse(),
 		stats.ErrorStr(),
 	)
+	return err
 }

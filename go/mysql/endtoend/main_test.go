@@ -26,12 +26,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/youtube/vitess/go/mysql"
-	vtenv "github.com/youtube/vitess/go/vt/env"
-	"github.com/youtube/vitess/go/vt/tlstest"
-	"github.com/youtube/vitess/go/vt/vttest"
+	"vitess.io/vitess/go/mysql"
+	vtenv "vitess.io/vitess/go/vt/env"
+	"vitess.io/vitess/go/vt/tlstest"
+	"vitess.io/vitess/go/vt/vttest"
 
-	vttestpb "github.com/youtube/vitess/go/vt/proto/vttest"
+	vttestpb "vitess.io/vitess/go/vt/proto/vttest"
 )
 
 var (
@@ -163,6 +163,14 @@ ssl-key=%v/server-key.pem
 			return 1
 		}
 
+		// For LargeQuery tests
+		cnf = "max_allowed_packet=100M\n"
+		maxPacketMyCnf := path.Join(root, "max_packet.cnf")
+		if err := ioutil.WriteFile(maxPacketMyCnf, []byte(cnf), os.ModePerm); err != nil {
+			fmt.Fprintf(os.Stderr, "ioutil.WriteFile(%v) failed: %v", maxPacketMyCnf, err)
+			return 1
+		}
+
 		// Launch MySQL.
 		// We need a Keyspace in the topology, so the DbName is set.
 		// We need a Shard too, so the database 'vttest' is created.
@@ -181,7 +189,7 @@ ssl-key=%v/server-key.pem
 				},
 			},
 			OnlyMySQL:  true,
-			ExtraMyCnf: []string{extraMyCnf},
+			ExtraMyCnf: []string{extraMyCnf, maxPacketMyCnf},
 		}
 		cluster := vttest.LocalCluster{
 			Config: cfg,

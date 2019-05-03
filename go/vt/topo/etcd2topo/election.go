@@ -20,10 +20,10 @@ import (
 	"path"
 
 	"github.com/coreos/etcd/clientv3"
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo"
 )
 
 // NewMasterParticipation is part of the topo.Server interface
@@ -64,7 +64,7 @@ func (mp *etcdMasterParticipation) WaitForMastership() (context.Context, error) 
 	// If Stop was already called, mp.done is closed, so we are interrupted.
 	select {
 	case <-mp.done:
-		return nil, topo.ErrInterrupted
+		return nil, topo.NewError(topo.Interrupted, "mastership")
 	default:
 	}
 
@@ -75,16 +75,14 @@ func (mp *etcdMasterParticipation) WaitForMastership() (context.Context, error) 
 	// we just cancel that context.
 	lockCtx, lockCancel := context.WithCancel(context.Background())
 	go func() {
-		select {
-		case <-mp.stop:
-			if ld != nil {
-				if err := ld.Unlock(context.Background()); err != nil {
-					log.Errorf("failed to unlock electionPath %v: %v", electionPath, err)
-				}
+		<-mp.stop
+		if ld != nil {
+			if err := ld.Unlock(context.Background()); err != nil {
+				log.Errorf("failed to unlock electionPath %v: %v", electionPath, err)
 			}
-			lockCancel()
-			close(mp.done)
 		}
+		lockCancel()
+		close(mp.done)
 	}()
 
 	// Try to get the mastership, by getting a lock.
@@ -116,7 +114,7 @@ func (mp *etcdMasterParticipation) GetCurrentMasterID(ctx context.Context) (stri
 		clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortAscend),
 		clientv3.WithLimit(1))
 	if err != nil {
-		return "", convertError(err)
+		return "", convertError(err, electionPath)
 	}
 	if len(resp.Kvs) == 0 {
 		// No key starts with this prefix, means nobody is the master.

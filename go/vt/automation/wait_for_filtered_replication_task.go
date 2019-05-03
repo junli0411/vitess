@@ -17,13 +17,13 @@ limitations under the License.
 package automation
 
 import (
-	automationpb "github.com/youtube/vitess/go/vt/proto/automation"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
 	"golang.org/x/net/context"
+	automationpb "vitess.io/vitess/go/vt/proto/automation"
+	"vitess.io/vitess/go/vt/topo/topoproto"
 )
 
 // WaitForFilteredReplicationTask runs vtctl WaitForFilteredReplication to block until the destination master
-// (i.e. the receiving side of the filtered replication) has caught up up to max_delay with the source shard.
+// (i.e. the receiving side of the filtered replication) has caught up to max_delay with the source shard.
 type WaitForFilteredReplicationTask struct {
 }
 

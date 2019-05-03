@@ -17,9 +17,9 @@ limitations under the License.
 package mysql
 
 import (
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sqltypes"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 // This file contains the methods needed to execute streaming queries.
@@ -41,16 +41,13 @@ func (c *Conn) ExecuteStreamFetch(query string) (err error) {
 		return NewSQLError(CRCommandsOutOfSync, SSUnknownSQLState, "streaming query already in progress")
 	}
 
-	// This is a new command, need to reset the sequence.
-	c.sequence = 0
-
 	// Send the query as a COM_QUERY packet.
-	if err := c.writeComQuery(query); err != nil {
+	if err := c.WriteComQuery(query); err != nil {
 		return err
 	}
 
 	// Get the result.
-	_, _, colNumber, err := c.readComQueryResponse()
+	_, _, colNumber, _, _, err := c.readComQueryResponse()
 	if err != nil {
 		return err
 	}
@@ -81,15 +78,13 @@ func (c *Conn) ExecuteStreamFetch(query string) (err error) {
 			return NewSQLError(CRServerLost, SSUnknownSQLState, "%v", err)
 		}
 		defer c.recycleReadPacket()
-		switch data[0] {
-		case EOFPacket:
+		if isEOFPacket(data) {
 			// This is what we expect.
 			// Warnings and status flags are ignored.
-			break
-		case ErrPacket:
-			// Error packet.
+			// goto: end
+		} else if isErrorPacket(data) {
 			return ParseErrorPacket(data)
-		default:
+		} else {
 			return NewSQLError(CRCommandsOutOfSync, SSUnknownSQLState, "unexpected packet after fields: %v", data)
 		}
 	}
@@ -128,18 +123,11 @@ func (c *Conn) FetchNext() ([]sqltypes.Value, error) {
 		return nil, err
 	}
 
-	switch data[0] {
-	case EOFPacket:
-		// This packet may be one of two kinds:
-		// - an EOF packet,
-		// - an OK packet with an EOF header if
-		// CapabilityClientDeprecateEOF is set.
-		// We do not parse it anyway, so it doesn't matter.
-
+	if isEOFPacket(data) {
 		// Warnings and status flags are ignored.
 		c.fields = nil
 		return nil, nil
-	case ErrPacket:
+	} else if isErrorPacket(data) {
 		// Error packet.
 		return nil, ParseErrorPacket(data)
 	}

@@ -22,12 +22,12 @@ import (
 	"testing"
 
 	"github.com/golang/mock/gomock"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/splitquery/splitquery_testing"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/splitquery/splitquery_testing"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 type FakeSplitAlgorithm struct {
@@ -459,7 +459,7 @@ func TestSplitWithExistingBindVariables(t *testing.T) {
 					" (id < :_splitquery_end_id or" +
 					" (id = :_splitquery_end_id and user_id < :_splitquery_end_user_id))",
 				BindVariables: map[string]*querypb.BindVariable{
-					"foo": sqltypes.Int64BindVariable(100),
+					"foo":                       sqltypes.Int64BindVariable(100),
 					"_splitquery_start_id":      sqltypes.Int64BindVariable(1),
 					"_splitquery_start_user_id": sqltypes.Int64BindVariable(2),
 					"_splitquery_end_id":        sqltypes.Int64BindVariable(1),
@@ -476,7 +476,7 @@ func TestSplitWithExistingBindVariables(t *testing.T) {
 					" (id < :_splitquery_end_id or" +
 					" (id = :_splitquery_end_id and user_id < :_splitquery_end_user_id))",
 				BindVariables: map[string]*querypb.BindVariable{
-					"foo": sqltypes.Int64BindVariable(100),
+					"foo":                       sqltypes.Int64BindVariable(100),
 					"_splitquery_start_id":      sqltypes.Int64BindVariable(1),
 					"_splitquery_start_user_id": sqltypes.Int64BindVariable(3),
 					"_splitquery_end_id":        sqltypes.Int64BindVariable(5),
@@ -490,7 +490,7 @@ func TestSplitWithExistingBindVariables(t *testing.T) {
 					" :_splitquery_start_id < id or" +
 					" (:_splitquery_start_id = id and :_splitquery_start_user_id <= user_id)",
 				BindVariables: map[string]*querypb.BindVariable{
-					"foo": sqltypes.Int64BindVariable(100),
+					"foo":                       sqltypes.Int64BindVariable(100),
 					"_splitquery_start_user_id": sqltypes.Int64BindVariable(1),
 					"_splitquery_start_id":      sqltypes.Int64BindVariable(5),
 				},
@@ -563,7 +563,7 @@ func TestWithRealEqualSplits(t *testing.T) {
 			},
 		},
 		nil)
-	equalSplits, err := NewEqualSplitsAlgorithm(splitParams, mockSQLExecuter)
+	equalSplits, _ := NewEqualSplitsAlgorithm(splitParams, mockSQLExecuter)
 	splitter := NewSplitter(splitParams, equalSplits)
 	queryParts, err := splitter.Split()
 	if err != nil {

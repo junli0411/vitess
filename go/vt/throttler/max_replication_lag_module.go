@@ -22,23 +22,23 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
 
-	"github.com/youtube/vitess/go/sync2"
-	"github.com/youtube/vitess/go/vt/discovery"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/sync2"
+	"vitess.io/vitess/go/vt/discovery"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo/topoproto"
 
-	throttlerdatapb "github.com/youtube/vitess/go/vt/proto/throttlerdata"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	throttlerdatapb "vitess.io/vitess/go/vt/proto/throttlerdata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 type state string
 
 const (
 	stateIncreaseRate         state = "I"
-	stateDecreaseAndGuessRate       = "D"
-	stateEmergency                  = "E"
+	stateDecreaseAndGuessRate state = "D"
+	stateEmergency            state = "E"
 )
 
 type replicationLagChange int

@@ -18,7 +18,7 @@
 
 set -e
 
-cell='test'
+cell=${CELL:-'test'}
 keyspace=${KEYSPACE:-'test_keyspace'}
 shard=${SHARD:-'0'}
 uid_base=${UID_BASE:-'100'}
@@ -36,33 +36,16 @@ fi
 script_root=`dirname "${BASH_SOURCE}"`
 source $script_root/env.sh
 
-dbconfig_dba_flags="\
-    -db-config-dba-uname vt_dba \
-    -db-config-dba-charset utf8"
-dbconfig_flags="$dbconfig_dba_flags \
-    -db-config-app-uname vt_app \
-    -db-config-app-dbname vt_$keyspace \
-    -db-config-app-charset utf8 \
-    -db-config-appdebug-uname vt_appdebug \
-    -db-config-appdebug-dbname vt_$keyspace \
-    -db-config-appdebug-charset utf8 \
-    -db-config-allprivs-uname vt_allprivs \
-    -db-config-allprivs-dbname vt_$keyspace \
-    -db-config-allprivs-charset utf8 \
-    -db-config-repl-uname vt_repl \
-    -db-config-repl-dbname vt_$keyspace \
-    -db-config-repl-charset utf8 \
-    -db-config-filtered-uname vt_filtered \
-    -db-config-filtered-dbname vt_$keyspace \
-    -db-config-filtered-charset utf8"
 init_db_sql_file="$VTROOT/config/init_db.sql"
+
+export EXTRA_MY_CNF=$VTROOT/config/mycnf/default-fast.cnf:$VTROOT/config/mycnf/rbr.cnf
 
 case "$MYSQL_FLAVOR" in
   "MySQL56")
-    export EXTRA_MY_CNF=$VTROOT/config/mycnf/master_mysql56.cnf
+    export EXTRA_MY_CNF=$EXTRA_MY_CNF:$VTROOT/config/mycnf/master_mysql56.cnf
     ;;
   "MariaDB")
-    export EXTRA_MY_CNF=$VTROOT/config/mycnf/master_mariadb.cnf
+    export EXTRA_MY_CNF=$EXTRA_MY_CNF:$VTROOT/config/mycnf/master_mariadb.cnf
     ;;
   *)
     echo "Please set MYSQL_FLAVOR to MySQL56 or MariaDB."
@@ -72,9 +55,9 @@ esac
 
 mkdir -p $VTDATAROOT/backups
 
-# Start 5 vttablets by default.
+# Start 3 vttablets by default.
 # Pass TABLETS_UIDS indices as env variable to change
-uids=${TABLETS_UIDS:-'0 1 2 3 4'}
+uids=${TABLETS_UIDS:-'0 1 2'}
 
 # Start all mysqlds in background.
 for uid_index in $uids; do
@@ -82,6 +65,19 @@ for uid_index in $uids; do
   mysql_port=$[$mysql_port_base + $uid_index]
   printf -v alias '%s-%010d' $cell $uid
   printf -v tablet_dir 'vt_%010d' $uid
+
+  export KEYSPACE=$keyspace
+  export SHARD=$shard
+  export TABLET_ID=$alias
+  export TABLET_DIR=$tablet_dir
+  export MYSQL_PORT=$mysql_port
+
+  tablet_type=replica
+  if [[ $uid_index -gt 1 ]]; then
+    tablet_type=rdonly
+  fi
+
+  export TABLET_TYPE=$tablet_type
 
   echo "Starting MySQL for tablet $alias..."
   action="init -init_db_sql_file $init_db_sql_file"
@@ -93,7 +89,6 @@ for uid_index in $uids; do
   $VTROOT/bin/mysqlctl \
     -log_dir $VTDATAROOT/tmp \
     -tablet_uid $uid \
-    $dbconfig_dba_flags \
     -mysql_port $mysql_port \
     $action &
 done
@@ -115,8 +110,9 @@ for uid_index in $uids; do
   grpc_port=$[$grpc_port_base + $uid_index]
   printf -v alias '%s-%010d' $cell $uid
   printf -v tablet_dir 'vt_%010d' $uid
+  printf -v tablet_logfile 'vttablet_%010d_querylog.txt' $uid
   tablet_type=replica
-  if [[ $uid_index -gt 2 ]]; then
+  if [[ $uid_index -gt 1 ]]; then
     tablet_type=rdonly
   fi
 
@@ -125,6 +121,7 @@ for uid_index in $uids; do
   $VTROOT/bin/vttablet \
     $TOPOLOGY_FLAGS \
     -log_dir $VTDATAROOT/tmp \
+    -log_queries_to_file $VTDATAROOT/tmp/$tablet_logfile \
     -tablet-path $alias \
     -tablet_hostname "$tablet_hostname" \
     -init_keyspace $keyspace \
@@ -142,7 +139,6 @@ for uid_index in $uids; do
     -pid_file $VTDATAROOT/$tablet_dir/vttablet.pid \
     -vtctld_addr http://$hostname:$vtctld_web_port/ \
     $optional_auth_args \
-    $dbconfig_flags \
     > $VTDATAROOT/$tablet_dir/vttablet.out 2>&1 &
 
   echo "Access tablet $alias at http://$hostname:$port/debug/status"

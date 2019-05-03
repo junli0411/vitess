@@ -24,8 +24,8 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqltypes"
 )
 
 type testHandler struct {
@@ -41,6 +41,10 @@ func (th *testHandler) ConnectionClosed(c *mysql.Conn) {
 
 func (th *testHandler) ComQuery(c *mysql.Conn, q string, callback func(*sqltypes.Result) error) error {
 	return nil
+}
+
+func (th *testHandler) WarningCount(c *mysql.Conn) uint16 {
+	return 0
 }
 
 func TestConnectionUnixSocket(t *testing.T) {

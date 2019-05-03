@@ -21,9 +21,9 @@ import (
 	"fmt"
 	"strconv"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
-	"github.com/youtube/vitess/go/vt/vterrors"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
 )
 
 // numeric represents a numeric value extracted from
@@ -198,7 +198,7 @@ func ToUint64(v Value) (uint64, error) {
 	panic("unreachable")
 }
 
-// ToInt64 converts Value to uint64.
+// ToInt64 converts Value to int64.
 func ToInt64(v Value) (int64, error) {
 	num, err := newIntegralNumeric(v)
 	if err != nil {
@@ -248,7 +248,7 @@ func ToNative(v Value) (interface{}, error) {
 		return ToUint64(v)
 	case v.IsFloat():
 		return ToFloat64(v)
-	case v.IsQuoted() || v.Type() == Decimal:
+	case v.IsQuoted() || v.Type() == Bit || v.Type() == Decimal:
 		out = v.val
 	case v.Type() == Expression:
 		err = vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "%v cannot be converted to a go type", v)

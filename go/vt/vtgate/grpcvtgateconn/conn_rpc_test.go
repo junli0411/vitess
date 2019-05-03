@@ -26,11 +26,11 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/vtgate/grpcvtgateservice"
-	"github.com/youtube/vitess/go/vt/vtgate/vtgateconn"
-	"github.com/youtube/vitess/go/vt/vtgate/vtgateconntest"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/vtgate/grpcvtgateservice"
+	"vitess.io/vitess/go/vt/vtgate/vtgateconn"
+	"vitess.io/vitess/go/vt/vtgate/vtgateconntest"
 )
 
 // TestGRPCVTGateConn makes sure the grpc service works
@@ -144,7 +144,7 @@ func TestGRPCVTGateConnAuth(t *testing.T) {
 		t.Fatalf("dial failed: %v", err)
 	}
 	vtgateconntest.RegisterTestDialProtocol(client)
-	conn, err := vtgateconn.DialProtocol(context.Background(), "test", "")
+	conn, _ := vtgateconn.DialProtocol(context.Background(), "test", "")
 	// run the test suite
 	_, err = conn.Begin(context.Background())
 	want := "rpc error: code = Unauthenticated desc = username and password must be provided"

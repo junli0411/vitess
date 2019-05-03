@@ -27,9 +27,9 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 
-	"github.com/youtube/vitess/go/vt/grpcclient"
-	automationpb "github.com/youtube/vitess/go/vt/proto/automation"
-	automationservicepb "github.com/youtube/vitess/go/vt/proto/automationservice"
+	"vitess.io/vitess/go/vt/grpcclient"
+	automationpb "vitess.io/vitess/go/vt/proto/automation"
+	automationservicepb "vitess.io/vitess/go/vt/proto/automationservice"
 )
 
 var (
@@ -106,7 +106,7 @@ func main() {
 	fmt.Printf("SUCCESS: ClusterOperation finished.\n\nDetails:\n%v", proto.MarshalTextString(resp))
 }
 
-// waitForClusterOp polls and blocks until the ClusterOperation invocation specified by "id" has finished. If an error occured, it will be returned.
+// waitForClusterOp polls and blocks until the ClusterOperation invocation specified by "id" has finished. If an error occurred, it will be returned.
 func waitForClusterOp(client automationservicepb.AutomationClient, id string) (*automationpb.GetClusterOperationDetailsResponse, error) {
 	for {
 		req := &automationpb.GetClusterOperationDetailsRequest{
@@ -115,7 +115,7 @@ func waitForClusterOp(client automationservicepb.AutomationClient, id string) (*
 
 		resp, err := client.GetClusterOperationDetails(context.Background(), req, grpc.FailFast(false))
 		if err != nil {
-			return nil, fmt.Errorf("Failed to get ClusterOperation Details. Request: %v Error: %v", req, err)
+			return nil, fmt.Errorf("failed to get ClusterOperation Details. Request: %v Error: %v", req, err)
 		}
 
 		switch resp.ClusterOp.State {

@@ -1,7 +1,7 @@
 {
   "name": "vtctld2",
   "version": "0.0.0",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "angular-cli": {},
   "scripts": {
     "start": "ng serve",
@@ -53,6 +53,6 @@
     "protractor": "3.3.0",
     "ts-node": "1.2.1",
     "tslint": "3.13.0",
-    "typescript": "^2.0.0"
+    "typescript": "=2.0.10"
   }
 }

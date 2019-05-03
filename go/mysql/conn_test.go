@@ -18,10 +18,13 @@ package mysql
 
 import (
 	"bytes"
+	crypto_rand "crypto/rand"
+	"math/rand"
 	"net"
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 )
 
 func createSocketPair(t *testing.T) (net.Listener, *Conn, *Conn) {
@@ -31,33 +34,35 @@ func createSocketPair(t *testing.T) (net.Listener, *Conn, *Conn) {
 		t.Fatalf("Listen failed: %v", err)
 	}
 	addr := listener.Addr().String()
+	listener.(*net.TCPListener).SetDeadline(time.Now().Add(10 * time.Second))
 
 	// Dial a client, Accept a server.
 	wg := sync.WaitGroup{}
 
 	var clientConn net.Conn
+	var clientErr error
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		var err error
-		clientConn, err = net.Dial("tcp", addr)
-		if err != nil {
-			t.Fatalf("Dial failed: %v", err)
-		}
+		clientConn, clientErr = net.DialTimeout("tcp", addr, 10*time.Second)
 	}()
 
 	var serverConn net.Conn
+	var serverErr error
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		var err error
-		serverConn, err = listener.Accept()
-		if err != nil {
-			t.Fatalf("Accept failed: %v", err)
-		}
+		serverConn, serverErr = listener.Accept()
 	}()
 
 	wg.Wait()
+
+	if clientErr != nil {
+		t.Fatalf("Dial failed: %v", clientErr)
+	}
+	if serverErr != nil {
+		t.Fatalf("Accept failed: %v", serverErr)
+	}
 
 	// Create a Conn on both sides.
 	cConn := newConn(clientConn)
@@ -75,25 +80,21 @@ func useWritePacket(t *testing.T, cConn *Conn, data []byte) {
 	if err := cConn.writePacket(data); err != nil {
 		t.Fatalf("writePacket failed: %v", err)
 	}
-	if err := cConn.flush(); err != nil {
-		t.Fatalf("flush failed: %v", err)
-	}
 }
 
-func useWriteEphemeralPacket(t *testing.T, cConn *Conn, data []byte) {
+func useWriteEphemeralPacketBuffered(t *testing.T, cConn *Conn, data []byte) {
 	defer func() {
 		if x := recover(); x != nil {
 			t.Fatalf("%v", x)
 		}
 	}()
+	cConn.startWriterBuffering()
+	defer cConn.flush()
 
 	buf := cConn.startEphemeralPacket(len(data))
 	copy(buf, data)
-	if err := cConn.writeEphemeralPacket(false); err != nil {
+	if err := cConn.writeEphemeralPacket(); err != nil {
 		t.Fatalf("writeEphemeralPacket(false) failed: %v", err)
-	}
-	if err := cConn.flush(); err != nil {
-		t.Fatalf("flush failed: %v", err)
 	}
 }
 
@@ -106,7 +107,7 @@ func useWriteEphemeralPacketDirect(t *testing.T, cConn *Conn, data []byte) {
 
 	buf := cConn.startEphemeralPacket(len(data))
 	copy(buf, data)
-	if err := cConn.writeEphemeralPacket(true); err != nil {
+	if err := cConn.writeEphemeralPacket(); err != nil {
 		t.Fatalf("writeEphemeralPacket(true) failed: %v", err)
 	}
 }
@@ -137,22 +138,25 @@ func verifyPacketCommsSpecific(t *testing.T, cConn *Conn, data []byte,
 func verifyPacketComms(t *testing.T, cConn, sConn *Conn, data []byte) {
 	// All three writes, with ReadPacket.
 	verifyPacketCommsSpecific(t, cConn, data, useWritePacket, sConn.ReadPacket)
-	verifyPacketCommsSpecific(t, cConn, data, useWriteEphemeralPacket, sConn.ReadPacket)
+	verifyPacketCommsSpecific(t, cConn, data, useWriteEphemeralPacketBuffered, sConn.ReadPacket)
 	verifyPacketCommsSpecific(t, cConn, data, useWriteEphemeralPacketDirect, sConn.ReadPacket)
 
 	// All three writes, with readEphemeralPacket.
 	verifyPacketCommsSpecific(t, cConn, data, useWritePacket, sConn.readEphemeralPacket)
 	sConn.recycleReadPacket()
-	verifyPacketCommsSpecific(t, cConn, data, useWriteEphemeralPacket, sConn.readEphemeralPacket)
+	verifyPacketCommsSpecific(t, cConn, data, useWriteEphemeralPacketBuffered, sConn.readEphemeralPacket)
 	sConn.recycleReadPacket()
 	verifyPacketCommsSpecific(t, cConn, data, useWriteEphemeralPacketDirect, sConn.readEphemeralPacket)
 	sConn.recycleReadPacket()
 
-	// All three writes, with readPacketDirect, if size allows it.
+	// All three writes, with readEphemeralPacketDirect, if size allows it.
 	if len(data) < MaxPacketSize {
-		verifyPacketCommsSpecific(t, cConn, data, useWritePacket, sConn.readPacketDirect)
-		verifyPacketCommsSpecific(t, cConn, data, useWriteEphemeralPacket, sConn.readPacketDirect)
-		verifyPacketCommsSpecific(t, cConn, data, useWriteEphemeralPacketDirect, sConn.readPacketDirect)
+		verifyPacketCommsSpecific(t, cConn, data, useWritePacket, sConn.readEphemeralPacketDirect)
+		sConn.recycleReadPacket()
+		verifyPacketCommsSpecific(t, cConn, data, useWriteEphemeralPacketBuffered, sConn.readEphemeralPacketDirect)
+		sConn.recycleReadPacket()
+		verifyPacketCommsSpecific(t, cConn, data, useWriteEphemeralPacketDirect, sConn.readEphemeralPacketDirect)
+		sConn.recycleReadPacket()
 	}
 }
 
@@ -167,6 +171,10 @@ func TestPackets(t *testing.T) {
 	// Verify all packets go through correctly.
 	// Small one.
 	data := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+	verifyPacketComms(t, cConn, sConn, data)
+
+	// 0 length packet
+	data = []byte{}
 	verifyPacketComms(t, cConn, sConn, data)
 
 	// Under the limit, still one packet.
@@ -214,7 +222,7 @@ func TestBasicPackets(t *testing.T) {
 		t.Fatalf("writeOKPacketWithEOFHeader failed: %v", err)
 	}
 	data, err = cConn.ReadPacket()
-	if err != nil || len(data) == 0 || data[0] != EOFPacket {
+	if err != nil || len(data) == 0 || !isEOFPacket(data) {
 		t.Fatalf("cConn.ReadPacket - OKPacket with EOF header failed: %v %v", data, err)
 	}
 	affectedRows, lastInsertID, statusFlags, warnings, err = parseOKPacket(data)
@@ -252,11 +260,26 @@ func TestBasicPackets(t *testing.T) {
 	if err := sConn.writeEOFPacket(0x8912, 0xabba); err != nil {
 		t.Fatalf("writeEOFPacket failed: %v", err)
 	}
-	if err := sConn.flush(); err != nil {
-		t.Fatalf("flush failed: %v", err)
-	}
 	data, err = cConn.ReadPacket()
-	if err != nil || len(data) == 0 || data[0] != EOFPacket {
+	if err != nil || len(data) == 0 || !isEOFPacket(data) {
 		t.Fatalf("cConn.ReadPacket - EOFPacket failed: %v %v", data, err)
+	}
+}
+
+// Mostly a sanity check.
+func TestEOFOrLengthEncodedIntFuzz(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		bytes := make([]byte, rand.Intn(16)+1)
+		_, err := crypto_rand.Read(bytes)
+		if err != nil {
+			t.Fatalf("error doing rand.Read")
+		}
+		bytes[0] = 0xfe
+
+		_, _, isInt := readLenEncInt(bytes, 0)
+		isEOF := isEOFPacket(bytes)
+		if (isInt && isEOF) || (!isInt && !isEOF) {
+			t.Fatalf("0xfe bytestring is EOF xor Int. Bytes %v", bytes)
+		}
 	}
 }

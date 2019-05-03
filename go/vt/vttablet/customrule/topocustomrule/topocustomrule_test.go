@@ -18,13 +18,12 @@ package topocustomrule
 
 import (
 	"context"
-	"reflect"
 	"testing"
 	"time"
 
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/rules"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletservermock"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/rules"
+	"vitess.io/vitess/go/vt/vttablet/tabletservermock"
 )
 
 var customRule1 = `
@@ -55,7 +54,7 @@ func waitForValue(t *testing.T, qsc *tabletservermock.Controller, expected *rule
 	for {
 		val := qsc.GetQueryRules(topoCustomRuleSource)
 		if val != nil {
-			if reflect.DeepEqual(val, expected) {
+			if val.Equal(expected) {
 				return
 			}
 		}

@@ -21,25 +21,25 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
-	"github.com/youtube/vitess/go/event"
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/trace"
-	"github.com/youtube/vitess/go/vt/concurrency"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/topotools/events"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/event"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/trace"
+	"vitess.io/vitess/go/vt/concurrency"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/topotools/events"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 var (
 	finalizeReparentTimeout = flag.Duration("finalize_external_reparent_timeout", 30*time.Second, "Timeout for the finalize stage of a fast external reparent reconciliation.")
 
-	externalReparentStats = stats.NewTimings("ExternalReparents", "NewMasterVisible", "FullRebuild")
+	externalReparentStats = stats.NewTimings("ExternalReparents", "External reparenting time", "stage", "NewMasterVisible", "FullRebuild")
 )
 
 // SetReparentFlags changes flag values. It should only be used in tests.
@@ -205,14 +205,14 @@ func (agent *ActionAgent) finalizeTabletExternallyReparented(ctx context.Context
 		log.Infof("finalizeTabletExternallyReparented: updating global shard record if needed")
 		_, err = agent.TopoServer.UpdateShardFields(ctx, tablet.Keyspace, tablet.Shard, func(currentSi *topo.ShardInfo) error {
 			if topoproto.TabletAliasEqual(currentSi.MasterAlias, tablet.Alias) {
-				return topo.ErrNoUpdateNeeded
+				return topo.NewError(topo.NoUpdateNeeded, tablet.Alias.String())
 			}
 			if !topoproto.TabletAliasEqual(currentSi.MasterAlias, oldMasterAlias) {
 				log.Warningf("old master alias (%v) not found in the global Shard record i.e. it has changed in the meantime."+
 					" We're not overwriting the value with the new master (%v) because the current value is probably newer."+
 					" (initial Shard record = %#v, current Shard record = %#v)",
 					oldMasterAlias, tablet.Alias, si, currentSi)
-				return topo.ErrNoUpdateNeeded
+				return topo.NewError(topo.NoUpdateNeeded, oldMasterAlias.String())
 			}
 			currentSi.MasterAlias = tablet.Alias
 			return nil

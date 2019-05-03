@@ -21,28 +21,28 @@ import (
 	"regexp"
 	"strings"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/sqlescape"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
+	"vitess.io/vitess/go/sqlescape"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/mysqlctl/tmutils"
 
-	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
+	tabletmanagerdatapb "vitess.io/vitess/go/vt/proto/tabletmanagerdata"
 )
 
-var autoIncr = regexp.MustCompile(" AUTO_INCREMENT=\\d+")
+var autoIncr = regexp.MustCompile(` AUTO_INCREMENT=\d+`)
 
 // executeSchemaCommands executes some SQL commands, using the mysql
 // command line tool. It uses the dba connection parameters, with credentials.
 func (mysqld *Mysqld) executeSchemaCommands(sql string) error {
-	params, err := dbconfigs.WithCredentials(&mysqld.dbcfgs.Dba)
+	params, err := dbconfigs.WithCredentials(mysqld.dbcfgs.Dba())
 	if err != nil {
 		return err
 	}
 
-	return mysqld.executeMysqlScript(&params, strings.NewReader(sql))
+	return mysqld.executeMysqlScript(params, strings.NewReader(sql))
 }
 
 // GetSchema returns the schema for database for tables listed in

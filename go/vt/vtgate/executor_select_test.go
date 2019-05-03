@@ -23,16 +23,17 @@ import (
 	"testing"
 
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/discovery"
-	_ "github.com/youtube/vitess/go/vt/vtgate/vindexes"
-	"github.com/youtube/vitess/go/vt/vttablet/sandboxconn"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/discovery"
+	_ "vitess.io/vitess/go/vt/vtgate/vindexes"
+	"vitess.io/vitess/go/vt/vttablet/sandboxconn"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vtgatepb "github.com/youtube/vitess/go/vt/proto/vtgate"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vtgatepb "vitess.io/vitess/go/vt/proto/vtgate"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 func TestSelectNext(t *testing.T) {
@@ -53,13 +54,13 @@ func TestSelectNext(t *testing.T) {
 	}
 }
 
-func TestExecDBA(t *testing.T) {
+func TestSelectDBA(t *testing.T) {
 	executor, sbc1, _, _ := createExecutorEnv()
 
 	query := "select * from INFORMATION_SCHEMA.foo"
 	_, err := executor.Execute(
 		context.Background(),
-		"TestExecDBA",
+		"TestSelectDBA",
 		NewSafeSession(&vtgatepb.Session{TargetString: "TestExecutor"}),
 		query,
 		map[string]*querypb.BindVariable{},
@@ -90,47 +91,6 @@ func TestUnsharded(t *testing.T) {
 	if !reflect.DeepEqual(sbclookup.Queries, wantQueries) {
 		t.Errorf("sbclookup.Queries: %+v, want %+v\n", sbclookup.Queries, wantQueries)
 	}
-
-	_, err = executorExec(executor, "update music_user_map set id = 1", nil)
-	if err != nil {
-		t.Error(err)
-	}
-	wantQueries = []*querypb.BoundQuery{{
-		Sql:           "select id from music_user_map where id = 1",
-		BindVariables: map[string]*querypb.BindVariable{},
-	}, {
-		Sql:           "update music_user_map set id = 1",
-		BindVariables: map[string]*querypb.BindVariable{},
-	}}
-	if !reflect.DeepEqual(sbclookup.Queries, wantQueries) {
-		t.Errorf("sbclookup.Queries: %+v, want %+v\n", sbclookup.Queries, wantQueries)
-	}
-
-	sbclookup.Queries = nil
-	_, err = executorExec(executor, "delete from music_user_map", nil)
-	if err != nil {
-		t.Error(err)
-	}
-	wantQueries = []*querypb.BoundQuery{{
-		Sql:           "delete from music_user_map",
-		BindVariables: map[string]*querypb.BindVariable{},
-	}}
-	if !reflect.DeepEqual(sbclookup.Queries, wantQueries) {
-		t.Errorf("sbclookup.Queries: %+v, want %+v\n", sbclookup.Queries, wantQueries)
-	}
-
-	sbclookup.Queries = nil
-	_, err = executorExec(executor, "insert into music_user_map values (1)", nil)
-	if err != nil {
-		t.Error(err)
-	}
-	wantQueries = []*querypb.BoundQuery{{
-		Sql:           "insert into music_user_map values (1)",
-		BindVariables: map[string]*querypb.BindVariable{},
-	}}
-	if !reflect.DeepEqual(sbclookup.Queries, wantQueries) {
-		t.Errorf("sbclookup.Queries: %+v, want %+v\n", sbclookup.Queries, wantQueries)
-	}
 }
 
 func TestUnshardedComments(t *testing.T) {
@@ -141,7 +101,7 @@ func TestUnshardedComments(t *testing.T) {
 		t.Error(err)
 	}
 	wantQueries := []*querypb.BoundQuery{{
-		Sql:           "select id from music_user_map where id = 1 /* trailing */",
+		Sql:           "/* leading */ select id from music_user_map where id = 1 /* trailing */",
 		BindVariables: map[string]*querypb.BindVariable{},
 	}}
 	if !reflect.DeepEqual(sbclookup.Queries, wantQueries) {
@@ -153,7 +113,7 @@ func TestUnshardedComments(t *testing.T) {
 		t.Error(err)
 	}
 	wantQueries = []*querypb.BoundQuery{{
-		Sql:           "select id from music_user_map where id = 1 /* trailing */",
+		Sql:           "/* leading */ select id from music_user_map where id = 1 /* trailing */",
 		BindVariables: map[string]*querypb.BindVariable{},
 	}, {
 		Sql:           "update music_user_map set id = 1 /* trailing */",
@@ -273,20 +233,8 @@ func TestStreamBuffering(t *testing.T) {
 	}
 }
 
-func TestShardFail(t *testing.T) {
-	executor, _, _, _ := createExecutorEnv()
-
-	getSandbox(KsTestUnsharded).SrvKeyspaceMustFail = 1
-
-	_, err := executorExec(executor, "select id from sharded_table where id = 1", nil)
-	want := "paramsAllShards: unsharded keyspace TestXBadSharding has multiple shards: possible cause: sharded keyspace is marked as unsharded in vschema"
-	if err == nil || err.Error() != want {
-		t.Errorf("executorExec: %v, want %v", err, want)
-	}
-}
-
 func TestSelectBindvars(t *testing.T) {
-	executor, sbc1, sbc2, _ := createExecutorEnv()
+	executor, sbc1, sbc2, lookup := createExecutorEnv()
 	logChan := QueryLogger.Subscribe("Test")
 	defer QueryLogger.Unsubscribe(logChan)
 
@@ -310,6 +258,7 @@ func TestSelectBindvars(t *testing.T) {
 	sbc1.Queries = nil
 	testQueryLog(t, logChan, "TestExecute", "SELECT", sql, 1)
 
+	// Test with StringBindVariable
 	sql = "select id from user where name in (:name1, :name2)"
 	_, err = executorExec(executor, sql, map[string]*querypb.BindVariable{
 		"name1": sqltypes.StringBindVariable("foo1"),
@@ -334,6 +283,7 @@ func TestSelectBindvars(t *testing.T) {
 	testQueryLog(t, logChan, "VindexLookup", "SELECT", "select user_id from name_user_map where name = :name", 1)
 	testQueryLog(t, logChan, "TestExecute", "SELECT", sql, 1)
 
+	// Test with BytesBindVariable
 	sql = "select id from user where name in (:name1, :name2)"
 	_, err = executorExec(executor, sql, map[string]*querypb.BindVariable{
 		"name1": sqltypes.BytesBindVariable([]byte("foo1")),
@@ -357,6 +307,51 @@ func TestSelectBindvars(t *testing.T) {
 	testQueryLog(t, logChan, "VindexLookup", "SELECT", "select user_id from name_user_map where name = :name", 1)
 	testQueryLog(t, logChan, "VindexLookup", "SELECT", "select user_id from name_user_map where name = :name", 1)
 	testQueryLog(t, logChan, "TestExecute", "SELECT", sql, 1)
+
+	// Test no match in the lookup vindex
+	sbc1.Queries = nil
+	lookup.Queries = nil
+	lookup.SetResults([]*sqltypes.Result{{
+		Fields: []*querypb.Field{
+			{Name: "user_id", Type: sqltypes.Int32},
+		},
+		RowsAffected: 0,
+		InsertID:     0,
+		Rows:         [][]sqltypes.Value{},
+	}})
+
+	sql = "select id from user where name = :name"
+	_, err = executorExec(executor, sql, map[string]*querypb.BindVariable{
+		"name": sqltypes.StringBindVariable("nonexistent"),
+	})
+	if err != nil {
+		t.Error(err)
+	}
+
+	// When there are no matching rows in the vindex, vtgate still needs the field info
+	wantQueries = []*querypb.BoundQuery{{
+		Sql: "select id from user where 1 != 1",
+		BindVariables: map[string]*querypb.BindVariable{
+			"name": sqltypes.StringBindVariable("nonexistent"),
+		},
+	}}
+	if !reflect.DeepEqual(sbc1.Queries, wantQueries) {
+		t.Errorf("sbc1.Queries: %+v, want %+v\n", sbc1.Queries, wantQueries)
+	}
+
+	wantLookupQueries := []*querypb.BoundQuery{{
+		Sql: "select user_id from name_user_map where name = :name",
+		BindVariables: map[string]*querypb.BindVariable{
+			"name": sqltypes.StringBindVariable("nonexistent"),
+		},
+	}}
+	if !reflect.DeepEqual(lookup.Queries, wantLookupQueries) {
+		t.Errorf("lookup.Queries: %+v, want %+v\n", lookup.Queries, wantLookupQueries)
+	}
+
+	testQueryLog(t, logChan, "VindexLookup", "SELECT", "select user_id from name_user_map where name = :name", 1)
+	testQueryLog(t, logChan, "TestExecute", "SELECT", sql, 1)
+
 }
 
 func TestSelectEqual(t *testing.T) {
@@ -470,7 +465,7 @@ func TestSelectComments(t *testing.T) {
 		t.Error(err)
 	}
 	wantQueries := []*querypb.BoundQuery{{
-		Sql:           "select id from user where id = 1 /* trailing */",
+		Sql:           "/* leading */ select id from user where id = 1 /* trailing */",
 		BindVariables: map[string]*querypb.BindVariable{},
 	}}
 	if !reflect.DeepEqual(sbc1.Queries, wantQueries) {
@@ -491,7 +486,7 @@ func TestSelectNormalize(t *testing.T) {
 		t.Error(err)
 	}
 	wantQueries := []*querypb.BoundQuery{{
-		Sql: "select id from user where id = :vtg1 /* trailing */",
+		Sql: "/* leading */ select id from user where id = :vtg1 /* trailing */",
 		BindVariables: map[string]*querypb.BindVariable{
 			"vtg1": sqltypes.TestBindVariable(int64(1)),
 		},
@@ -511,7 +506,7 @@ func TestSelectNormalize(t *testing.T) {
 		t.Error(err)
 	}
 	wantQueries = []*querypb.BoundQuery{{
-		Sql: "select id from user where id = :vtg1 /* trailing */",
+		Sql: "/* leading */ select id from user where id = :vtg1 /* trailing */",
 		BindVariables: map[string]*querypb.BindVariable{
 			"vtg1": sqltypes.TestBindVariable(int64(1)),
 		},
@@ -544,29 +539,6 @@ func TestSelectCaseSensitivity(t *testing.T) {
 		t.Errorf("sbc2.Queries: %+v, want nil\n", sbc2.Queries)
 	}
 	sbc1.Queries = nil
-}
-
-func TestSelectEqualNotFound(t *testing.T) {
-	executor, _, _, sbclookup := createExecutorEnv()
-
-	sbclookup.SetResults([]*sqltypes.Result{{}})
-	result, err := executorExec(executor, "select id from music where id = 1", nil)
-	if err != nil {
-		t.Error(err)
-	}
-	wantResult := sandboxconn.SingleRowResult
-	if !result.Equal(wantResult) {
-		t.Errorf("result: %+v, want %+v", result, wantResult)
-	}
-
-	sbclookup.SetResults([]*sqltypes.Result{{}})
-	result, err = executorExec(executor, "select id from user where name = 'foo'", nil)
-	if err != nil {
-		t.Error(err)
-	}
-	if !result.Equal(wantResult) {
-		t.Errorf("result: %+v, want %+v", result, wantResult)
-	}
 }
 
 func TestStreamSelectEqual(t *testing.T) {
@@ -623,64 +595,10 @@ func TestSelectKeyRangeUnique(t *testing.T) {
 	sbc1.Queries = nil
 }
 
-func TestSelectEqualFail(t *testing.T) {
-	executor, _, _, sbclookup := createExecutorEnv()
-	s := getSandbox("TestExecutor")
-
-	_, err := executorExec(executor, "select id from user where id = (select count(*) from music)", nil)
-	want := "unsupported"
-	if err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("executorExec: %v, must start with %v", err, want)
-	}
-
-	_, err = executorExec(executor, "select id from user where id = :aa", nil)
-	want = "paramsSelectEqual: missing bind var aa"
-	if err == nil || err.Error() != want {
-		t.Errorf("executorExec: %v, want %v", err, want)
-	}
-
-	s.SrvKeyspaceMustFail = 1
-	_, err = executorExec(executor, "select id from user where id = 1", nil)
-	want = "paramsSelectEqual: keyspace TestExecutor fetch error: topo error GetSrvKeyspace"
-	if err == nil || err.Error() != want {
-		t.Errorf("executorExec: %v, want %v", err, want)
-	}
-
-	sbclookup.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = executorExec(executor, "select id from music where id = 1", nil)
-	want = "paramsSelectEqual: lookup.Map"
-	if err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("executorExec: %v, want prefix %v", err, want)
-	}
-
-	s.ShardSpec = "80-"
-	_, err = executorExec(executor, "select id from user where id = 1", nil)
-	want = "paramsSelectEqual: KeyspaceId 166b40b44aba4bd6 didn't match any shards"
-	if err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("executorExec: %v, want prefix %v", err, want)
-	}
-	s.ShardSpec = DefaultShardSpec
-
-	sbclookup.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = executorExec(executor, "select id from user where name = 'foo'", nil)
-	want = "paramsSelectEqual: lookup.Map"
-	if err == nil || !strings.HasPrefix(err.Error(), want) {
-		t.Errorf("executorExec: %v, want prefix %v", err, want)
-	}
-
-	s.ShardSpec = "80-"
-	_, err = executorExec(executor, "select id from user where name = 'foo'", nil)
-	want = "paramsSelectEqual: KeyspaceId 166b40b44aba4bd6 didn't match any shards"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("executorExec: %v, must contain %v", err, want)
-	}
-	s.ShardSpec = DefaultShardSpec
-}
-
 func TestSelectIN(t *testing.T) {
 	executor, sbc1, sbc2, sbclookup := createExecutorEnv()
 
-	// Constant in IN is just a number, not a bind variable.
+	// Constant in IN clause is just a number, not a bind variable.
 	_, err := executorExec(executor, "select id from user where id in (1)", nil)
 	if err != nil {
 		t.Error(err)
@@ -698,7 +616,7 @@ func TestSelectIN(t *testing.T) {
 		t.Errorf("sbc2.Queries: %+v, want nil\n", sbc2.Queries)
 	}
 
-	// Constant in IN is just a couple numbers, not bind variables.
+	// Constants in IN clause are just numbers, not bind variables.
 	// They result in two different queries on two shards.
 	sbc1.Queries = nil
 	sbc2.Queries = nil
@@ -832,37 +750,6 @@ func TestStreamSelectIN(t *testing.T) {
 	}
 }
 
-func TestSelectINFail(t *testing.T) {
-	executor, _, _, _ := createExecutorEnv()
-
-	_, err := executorExec(executor, "select id from user where id in (:aa)", nil)
-	want := "paramsSelectIN: missing bind var aa"
-	if err == nil || err.Error() != want {
-		t.Errorf("executorExec: %v, want %v", err, want)
-	}
-
-	_, err = executorExec(executor, "select id from user where id in ::aa", nil)
-	want = "paramsSelectIN: missing bind var aa"
-	if err == nil || err.Error() != want {
-		t.Errorf("executorExec: %v, want %v", err, want)
-	}
-
-	_, err = executorExec(executor, "select id from user where id in ::aa", map[string]*querypb.BindVariable{
-		"aa": sqltypes.Int64BindVariable(1),
-	})
-	want = `paramsSelectIN: single value was supplied for TUPLE bind var aa`
-	if err == nil || err.Error() != want {
-		t.Errorf("executorExec:\n%v, want\n%v", err, want)
-	}
-
-	getSandbox("TestExecutor").SrvKeyspaceMustFail = 1
-	_, err = executorExec(executor, "select id from user where id in (1)", nil)
-	want = "paramsSelectEqual: keyspace TestExecutor fetch error: topo error GetSrvKeyspace"
-	if err == nil || err.Error() != want {
-		t.Errorf("executorExec: %v, want %v", err, want)
-	}
-}
-
 func TestSelectScatter(t *testing.T) {
 	// Special setup: Don't use createExecutorEnv.
 	cell := "aa"
@@ -898,7 +785,7 @@ func TestSelectScatter(t *testing.T) {
 	testQueryLog(t, logChan, "TestExecute", "SELECT", wantQueries[0].Sql, 8)
 }
 
-func TestStreamSelectScatter(t *testing.T) {
+func TestSelectScatterPartial(t *testing.T) {
 	// Special setup: Don't use createExecutorEnv.
 	cell := "aa"
 	hc := discovery.NewFakeHealthCheck()
@@ -912,6 +799,68 @@ func TestStreamSelectScatter(t *testing.T) {
 	for _, shard := range shards {
 		sbc := hc.AddTestTablet(cell, shard, 1, "TestExecutor", shard, topodatapb.TabletType_MASTER, true, 1, nil)
 		conns = append(conns, sbc)
+	}
+
+	executor := NewExecutor(context.Background(), serv, cell, "", resolver, false, testBufferSize, testCacheSize, false)
+	logChan := QueryLogger.Subscribe("Test")
+	defer QueryLogger.Unsubscribe(logChan)
+
+	// Fail 1 of N without the directive fails the whole operation
+	conns[2].MustFailCodes[vtrpcpb.Code_RESOURCE_EXHAUSTED] = 1000
+	results, err := executorExec(executor, "select id from user", nil)
+	wantErr := "TestExecutor.40-60.master, used tablet: aa-0 (40-60)"
+	if err == nil || !strings.Contains(err.Error(), wantErr) {
+		t.Errorf("want error %v, got %v", wantErr, err)
+	}
+	if vterrors.Code(err) != vtrpcpb.Code_RESOURCE_EXHAUSTED {
+		t.Errorf("want error code Code_RESOURCE_EXHAUSTED, but got %v", vterrors.Code(err))
+	}
+	if results != nil {
+		t.Errorf("want nil results, got %v", results)
+	}
+	testQueryLog(t, logChan, "TestExecute", "SELECT", "select id from user", 8)
+
+	// Fail 1 of N with the directive succeeds with 7 rows
+	results, err = executorExec(executor, "select /*vt+ SCATTER_ERRORS_AS_WARNINGS=1 */ id from user", nil)
+	if err != nil {
+		t.Error(err)
+	}
+	if results == nil || len(results.Rows) != 7 {
+		t.Errorf("want 7 results, got %v", results)
+	}
+	testQueryLog(t, logChan, "TestExecute", "SELECT", "select /*vt+ SCATTER_ERRORS_AS_WARNINGS=1 */ id from user", 8)
+
+	// Even if all shards fail the operation succeeds with 0 rows
+	conns[0].MustFailCodes[vtrpcpb.Code_RESOURCE_EXHAUSTED] = 1000
+	conns[1].MustFailCodes[vtrpcpb.Code_RESOURCE_EXHAUSTED] = 1000
+	conns[3].MustFailCodes[vtrpcpb.Code_RESOURCE_EXHAUSTED] = 1000
+	conns[4].MustFailCodes[vtrpcpb.Code_RESOURCE_EXHAUSTED] = 1000
+	conns[5].MustFailCodes[vtrpcpb.Code_RESOURCE_EXHAUSTED] = 1000
+	conns[6].MustFailCodes[vtrpcpb.Code_RESOURCE_EXHAUSTED] = 1000
+	conns[7].MustFailCodes[vtrpcpb.Code_RESOURCE_EXHAUSTED] = 1000
+
+	results, err = executorExec(executor, "select /*vt+ SCATTER_ERRORS_AS_WARNINGS=1 */ id from user", nil)
+	if err != nil {
+		t.Error(err)
+	}
+	if results == nil || len(results.Rows) != 0 {
+		t.Errorf("want 0 result rows, got %v", results)
+	}
+	testQueryLog(t, logChan, "TestExecute", "SELECT", "select /*vt+ SCATTER_ERRORS_AS_WARNINGS=1 */ id from user", 8)
+}
+
+func TestStreamSelectScatter(t *testing.T) {
+	// Special setup: Don't use createExecutorEnv.
+	cell := "aa"
+	hc := discovery.NewFakeHealthCheck()
+	s := createSandbox("TestExecutor")
+	s.VSchema = executorVSchema
+	getSandbox(KsTestUnsharded).VSchema = unshardedVSchema
+	serv := new(sandboxTopo)
+	resolver := newTestResolver(hc, serv, cell)
+	shards := []string{"-20", "20-40", "40-60", "60-80", "80-a0", "a0-c0", "c0-e0", "e0-"}
+	for _, shard := range shards {
+		_ = hc.AddTestTablet(cell, shard, 1, "TestExecutor", shard, topodatapb.TabletType_MASTER, true, 1, nil)
 	}
 	executor := NewExecutor(context.Background(), serv, cell, "", resolver, false, testBufferSize, testCacheSize, false)
 
@@ -935,31 +884,6 @@ func TestStreamSelectScatter(t *testing.T) {
 	}
 	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
-	}
-}
-
-func TestSelectScatterFail(t *testing.T) {
-	// Special setup: Don't use createExecutorEnv.
-	cell := "aa"
-	hc := discovery.NewFakeHealthCheck()
-	s := createSandbox("TestExecutor")
-	s.VSchema = executorVSchema
-	getSandbox(KsTestUnsharded).VSchema = unshardedVSchema
-	s.SrvKeyspaceMustFail = 1
-	shards := []string{"-20", "20-40", "40-60", "60-80", "80-a0", "a0-c0", "c0-e0", "e0-"}
-	var conns []*sandboxconn.SandboxConn
-	for _, shard := range shards {
-		sbc := hc.AddTestTablet(cell, shard, 1, "TestExecutor", shard, topodatapb.TabletType_MASTER, true, 1, nil)
-		conns = append(conns, sbc)
-	}
-	serv := new(sandboxTopo)
-	resolver := newTestResolver(hc, serv, cell)
-	executor := NewExecutor(context.Background(), serv, cell, "", resolver, false, testBufferSize, testCacheSize, false)
-
-	_, err := executorExec(executor, "select id from user", nil)
-	want := "paramsAllShards: keyspace TestExecutor fetch error: topo error GetSrvKeyspace"
-	if err == nil || err.Error() != want {
-		t.Errorf("executorExec: %v, want %v", err, want)
 	}
 }
 
@@ -1235,42 +1159,6 @@ func TestStreamSelectScatterOrderByVarChar(t *testing.T) {
 	}
 }
 
-// TestSelectScatterOrderByFail will run an ORDER BY query that will scatter out to 8 shards, with
-// the order by column as VarChar, which is unsupported.
-func TestSelectScatterOrderByFail(t *testing.T) {
-	// Special setup: Don't use createExecutorEnv.
-	cell := "aa"
-	hc := discovery.NewFakeHealthCheck()
-	s := createSandbox("TestExecutor")
-	s.VSchema = executorVSchema
-	getSandbox(KsTestUnsharded).VSchema = unshardedVSchema
-	serv := new(sandboxTopo)
-	resolver := newTestResolver(hc, serv, cell)
-	shards := []string{"-20", "20-40", "40-60", "60-80", "80-a0", "a0-c0", "c0-e0", "e0-"}
-	for _, shard := range shards {
-		sbc := hc.AddTestTablet(cell, shard, 1, "TestExecutor", shard, topodatapb.TabletType_MASTER, true, 1, nil)
-		sbc.SetResults([]*sqltypes.Result{{
-			Fields: []*querypb.Field{
-				{Name: "id", Type: sqltypes.Int32},
-				{Name: "col", Type: sqltypes.Int32},
-			},
-			RowsAffected: 1,
-			InsertID:     0,
-			Rows: [][]sqltypes.Value{{
-				sqltypes.NewInt32(1),
-				sqltypes.NewVarChar("aaa"),
-			}},
-		}})
-	}
-	executor := NewExecutor(context.Background(), serv, cell, "", resolver, false, testBufferSize, testCacheSize, false)
-
-	_, err := executorExec(executor, "select id, col from user order by col asc", nil)
-	want := "types are not comparable: VARCHAR vs VARCHAR"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("scatter order by error: %v, must contain %s", err, want)
-	}
-}
-
 // TestSelectScatterAggregate will run an aggregate query that will scatter out to 8 shards and return 4 aggregated rows.
 func TestSelectScatterAggregate(t *testing.T) {
 	// Special setup: Don't use createExecutorEnv.
@@ -1438,12 +1326,12 @@ func TestSelectScatterLimit(t *testing.T) {
 	}
 
 	wantQueries := []*querypb.BoundQuery{{
-		Sql:           query,
-		BindVariables: map[string]*querypb.BindVariable{},
+		Sql:           "select col1, col2 from user order by col2 desc limit :__upper_limit",
+		BindVariables: map[string]*querypb.BindVariable{"__upper_limit": sqltypes.Int64BindVariable(3)},
 	}}
 	for _, conn := range conns {
 		if !reflect.DeepEqual(conn.Queries, wantQueries) {
-			t.Errorf("conn.Queries = %#v, want %#v", conn.Queries, wantQueries)
+			t.Errorf("got: conn.Queries = %v, want: %v", conn.Queries, wantQueries)
 		}
 	}
 
@@ -1512,12 +1400,12 @@ func TestStreamSelectScatterLimit(t *testing.T) {
 	}
 
 	wantQueries := []*querypb.BoundQuery{{
-		Sql:           query,
-		BindVariables: map[string]*querypb.BindVariable{},
+		Sql:           "select col1, col2 from user order by col2 desc limit :__upper_limit",
+		BindVariables: map[string]*querypb.BindVariable{"__upper_limit": sqltypes.Int64BindVariable(3)},
 	}}
 	for _, conn := range conns {
 		if !reflect.DeepEqual(conn.Queries, wantQueries) {
-			t.Errorf("conn.Queries = %#v, want %#v", conn.Queries, wantQueries)
+			t.Errorf("got: conn.Queries = %v, want: %v", conn.Queries, wantQueries)
 		}
 	}
 
@@ -1734,10 +1622,6 @@ func TestVarJoinStream(t *testing.T) {
 	if !reflect.DeepEqual(sbc1.Queries, wantQueries) {
 		t.Errorf("sbc1.Queries: %+v, want %+v\n", sbc1.Queries, wantQueries)
 	}
-	wantQueries = []*querypb.BoundQuery{{
-		Sql:           "select u2.id from user as u2 where u2.id = :u1_col",
-		BindVariables: map[string]*querypb.BindVariable{},
-	}}
 	// We have to use string representation because bindvars type is too complex.
 	got := fmt.Sprintf("%+v", sbc2.Queries)
 	want := `[sql:"select u2.id from user as u2 where u2.id = :u1_col" bind_variables:<key:"u1_col" value:<type:INT32 value:"3" > > ]`
@@ -2013,94 +1897,6 @@ func TestEmptyJoinRecursiveStream(t *testing.T) {
 	}
 	if !result.Equal(wantResult) {
 		t.Errorf("result: %+v, want %+v", result, wantResult)
-	}
-}
-
-func TestJoinErrors(t *testing.T) {
-	executor, sbc1, sbc2, _ := createExecutorEnv()
-
-	// First query fails
-	sbc1.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err := executorExec(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1", nil)
-	want := "INVALID_ARGUMENT error"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("err: %v, must contain %s", err, want)
-	}
-
-	// Field query fails
-	sbc2.SetResults([]*sqltypes.Result{{
-		Fields: []*querypb.Field{
-			{Name: "id", Type: sqltypes.Int32},
-		},
-	}})
-	sbc1.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = executorExec(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 3", nil)
-	want = "INVALID_ARGUMENT error"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("err: %v, must contain %s", err, want)
-	}
-
-	// Second query fails
-	sbc1.SetResults([]*sqltypes.Result{{
-		Fields: []*querypb.Field{
-			{Name: "id", Type: sqltypes.Int32},
-			{Name: "col", Type: sqltypes.Int32},
-		},
-		Rows: [][]sqltypes.Value{{
-			sqltypes.NewInt32(1),
-			sqltypes.NewInt32(3),
-		}},
-	}})
-	sbc2.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = executorExec(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1", nil)
-	want = "INVALID_ARGUMENT error"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("err: %v, must contain %s", err, want)
-	}
-
-	// Nested join query fails on get fields
-	sbc2.SetResults([]*sqltypes.Result{{
-		Fields: []*querypb.Field{
-			{Name: "id", Type: sqltypes.Int32},
-			{Name: "col", Type: sqltypes.Int32},
-		},
-	}})
-	sbc1.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = executorExec(executor, "select u1.id, u2.id from user u1 join (user u2 join user u3 on u3.id = u2.col) where u1.id = 3", nil)
-	want = "INVALID_ARGUMENT error"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("err: %v, must contain %s", err, want)
-	}
-
-	// Field query fails on stream join
-	sbc2.SetResults([]*sqltypes.Result{{
-		Fields: []*querypb.Field{
-			{Name: "id", Type: sqltypes.Int32},
-		},
-	}})
-	sbc1.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = executorStream(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 3")
-	want = "INVALID_ARGUMENT error"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("err: %v, must contain %s", err, want)
-	}
-
-	// Second query fails on stream join
-	sbc1.SetResults([]*sqltypes.Result{{
-		Fields: []*querypb.Field{
-			{Name: "id", Type: sqltypes.Int32},
-			{Name: "col", Type: sqltypes.Int32},
-		},
-		Rows: [][]sqltypes.Value{{
-			sqltypes.NewInt32(1),
-			sqltypes.NewInt32(3),
-		}},
-	}})
-	sbc2.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
-	_, err = executorStream(executor, "select u1.id, u2.id from user u1 join user u2 on u2.id = u1.col where u1.id = 1")
-	want = "INVALID_ARGUMENT error"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("err: %v, must contain %s", err, want)
 	}
 }
 

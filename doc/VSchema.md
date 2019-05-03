@@ -11,7 +11,7 @@ In Vitess, a `keyspace` is sharded by `keyspace ID` ranges. Each row is assigned
 1. The `keyspace ID` is a concept that is internal to Vitess. The application does not need to know anything about it.
 2. There is no physical column that stores the actual `keyspace ID`. This value is computed as needed.
 
-This difference is significant enough that we do not refer to the keyspace ID as the sharding key. we will later introduce the concept of a Primary Vindex which more closely ressembles the NoSQL sharding key.
+This difference is significant enough that we do not refer to the keyspace ID as the sharding key. we will later introduce the concept of a Primary Vindex which more closely resembles the NoSQL sharding key.
 
 Mapping to a `keyspace ID`, and then to a shard, gives us the flexibility to reshard the data with minimal disruption because the `keyspace ID` of each row remains unchanged through the process.
 
@@ -101,9 +101,9 @@ Lookup NonUnique | 20
 
 #### Select
 
-In the case of a simple select, Vitess scans the WHERE clause to match references to Vindex columns and chooses the best one to use. If there is no match and the query is simple without complex constructs like aggreates, etc, it is sent to all shards.
+In the case of a simple select, Vitess scans the WHERE clause to match references to Vindex columns and chooses the best one to use. If there is no match and the query is simple without complex constructs like aggregates, etc, it is sent to all shards.
 
-Vitess can handle more complex queries. For now, you can refer to the [design doc](https://github.com/youtube/vitess/blob/master/doc/V3HighLevelDesign.md) on how it handles them.
+Vitess can handle more complex queries. For now, you can refer to the [design doc](https://github.com/vitessio/vitess/blob/master/doc/V3HighLevelDesign.md) on how it handles them.
 
 #### Insert
 
@@ -113,7 +113,7 @@ Vitess can handle more complex queries. For now, you can refer to the [design do
 
 #### Update
 
-The WHERE clause is used to route the update. Changing the value of a Vindex column is unsupported because this may result in a row being migrated from one shard to another.
+The WHERE clause is used to route the update. Updating the value of a Vindex column is supported, but with a restriction: the change in the column value should not result in the row being moved from one shard to another. A workaround is to perform a delete followed by insert, which works as expected.
 
 #### Delete
 
@@ -133,6 +133,7 @@ lookup_unique | Lookup Unique | Lookup table unique values | If unowned | Yes | 
 numeric | Functional Unique | Identity | Yes | Yes | 0
 numeric_static_map | Functional Unique | A JSON file that maps input values to keyspace IDs | Yes | No | 1
 unicode_loose_md5 | Functional Unique | Case-insensitive (UCA level 1) md5 hash | Yes | No | 1
+reverse_bits | Functional Unique | Bit Reversal | Yes | Yes | 1
 
 Custom vindexes can also be plugged in as needed.
 
@@ -147,9 +148,9 @@ As mentioned in the beginning of the document, a VSchema is needed to tie togeth
 If you have multiple unsharded keyspaces, you can still avoid defining a VSchema in one of two ways:
 
 1. Connect to a keyspace and all queries are sent to it.
-2. Connect to Vitess without specifying a keyspace, but use qualifed names for tables, like `keyspace.table` in your queries.
+2. Connect to Vitess without specifying a keyspace, but use qualified names for tables, like `keyspace.table` in your queries.
 
-However, once the setup exceeds the above complexity, VSchemas become a necessity. Vitess has a [working demo](https://github.com/youtube/vitess/tree/master/examples/demo) of VSchemas. This section documents the various features highlighted with snippets pulled from the demo.
+However, once the setup exceeds the above complexity, VSchemas become a necessity. Vitess has a [working demo](https://github.com/vitessio/vitess/tree/master/examples/demo) of VSchemas. This section documents the various features highlighted with snippets pulled from the demo.
 
 ### Unsharded Table
 
@@ -336,4 +337,4 @@ VSchema is still evolving. Features are mostly added on demand. The following fe
 
 * DDL support
 * Lookup Vindex backfill
-* Pinned tables: This feature will allow unsharded tables to be pinned to a keypsace id. This avoids the need for a separate unsharded keyspace to contain them.
+* Pinned tables: This feature will allow unsharded tables to be pinned to a keyspace id. This avoids the need for a separate unsharded keyspace to contain them.

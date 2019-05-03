@@ -19,13 +19,15 @@ package worker
 import (
 	"fmt"
 
+	"vitess.io/vitess/go/vt/vterrors"
+
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/discovery"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/discovery"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // tabletProvider defines an interface to pick a tablet for reading data.
@@ -59,7 +61,7 @@ func (p *singleTabletProvider) getTablet() (*topodatapb.Tablet, error) {
 	tablet, err := p.ts.GetTablet(shortCtx, p.alias)
 	cancel()
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve tablet alias: %v err: %v", topoproto.TabletAliasString(p.alias), err)
+		return nil, vterrors.Wrapf(err, "failed to resolve tablet alias: %v err", topoproto.TabletAliasString(p.alias))
 	}
 	return tablet.Tablet, err
 }
@@ -73,21 +75,22 @@ func (p *singleTabletProvider) description() string {
 // shardTabletProvider returns a random healthy RDONLY tablet for a given
 // keyspace and shard. It uses the HealthCheck module to retrieve the tablets.
 type shardTabletProvider struct {
-	tsc      *discovery.TabletStatsCache
-	tracker  *TabletTracker
-	keyspace string
-	shard    string
+	tsc        *discovery.TabletStatsCache
+	tracker    *TabletTracker
+	keyspace   string
+	shard      string
+	tabletType topodatapb.TabletType
 }
 
-func newShardTabletProvider(tsc *discovery.TabletStatsCache, tracker *TabletTracker, keyspace, shard string) *shardTabletProvider {
-	return &shardTabletProvider{tsc, tracker, keyspace, shard}
+func newShardTabletProvider(tsc *discovery.TabletStatsCache, tracker *TabletTracker, keyspace, shard string, tabletType topodatapb.TabletType) *shardTabletProvider {
+	return &shardTabletProvider{tsc, tracker, keyspace, shard, tabletType}
 }
 
 func (p *shardTabletProvider) getTablet() (*topodatapb.Tablet, error) {
 	// Pick any healthy serving tablet.
-	tablets := p.tsc.GetHealthyTabletStats(p.keyspace, p.shard, topodatapb.TabletType_RDONLY)
+	tablets := p.tsc.GetHealthyTabletStats(p.keyspace, p.shard, p.tabletType)
 	if len(tablets) == 0 {
-		return nil, fmt.Errorf("%v: no healthy RDONLY tablets available", p.description())
+		return nil, fmt.Errorf("%v: no healthy %v tablets available", p.description(), p.tabletType)
 	}
 	return p.tracker.Track(tablets), nil
 }

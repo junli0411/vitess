@@ -26,10 +26,13 @@ import (
 	"errors"
 	"flag"
 	"io/ioutil"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/mysql"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/vt/log"
 )
 
 var (
@@ -37,7 +40,7 @@ var (
 	dbCredentialsServer = flag.String("db-credentials-server", "file", "db credentials server type (use 'file' for the file implementation)")
 
 	// 'file' implementation flags
-	dbCredentialsFile = flag.String("db-credentials-file", "", "db credentials file")
+	dbCredentialsFile = flag.String("db-credentials-file", "", "db credentials file; send SIGHUP to reload this file")
 
 	// ErrUnknownUser is returned by credential server when the
 	// user doesn't exist
@@ -110,7 +113,7 @@ func (fcs *FileCredentialsServer) GetUserAndPassword(user string) (string, strin
 
 // WithCredentials returns a copy of the provided ConnParams that we can use
 // to connect, after going through the CredentialsServer.
-func WithCredentials(cp *mysql.ConnParams) (mysql.ConnParams, error) {
+func WithCredentials(cp *mysql.ConnParams) (*mysql.ConnParams, error) {
 	result := *cp
 	user, passwd, err := GetCredentialsServer().GetUserAndPassword(cp.Uname)
 	switch err {
@@ -121,9 +124,21 @@ func WithCredentials(cp *mysql.ConnParams) (mysql.ConnParams, error) {
 		// we just use what we have, and will fail later anyway
 		err = nil
 	}
-	return result, err
+	return &result, err
 }
 
 func init() {
 	AllCredentialsServers["file"] = &FileCredentialsServer{}
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGHUP)
+	go func() {
+		for range sigChan {
+			if fcs, ok := AllCredentialsServers["file"].(*FileCredentialsServer); ok {
+				fcs.mu.Lock()
+				fcs.dbCredentials = nil
+				fcs.mu.Unlock()
+			}
+		}
+	}()
 }

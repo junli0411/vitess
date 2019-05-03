@@ -24,21 +24,21 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/callerid"
-	"github.com/youtube/vitess/go/vt/callinfo"
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vtgate"
-	"github.com/youtube/vitess/go/vt/vtgate/vtgateservice"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/callerid"
+	"vitess.io/vitess/go/vt/callinfo"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vtgate"
+	"vitess.io/vitess/go/vt/vtgate/vtgateservice"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vtgatepb "github.com/youtube/vitess/go/vt/proto/vtgate"
-	vtgateservicepb "github.com/youtube/vitess/go/vt/proto/vtgateservice"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vtgatepb "vitess.io/vitess/go/vt/proto/vtgate"
+	vtgateservicepb "vitess.io/vitess/go/vt/proto/vtgateservice"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 const (
@@ -125,7 +125,6 @@ func (vtg *VTGate) Execute(ctx context.Context, request *vtgatepb.ExecuteRequest
 func (vtg *VTGate) ExecuteBatch(ctx context.Context, request *vtgatepb.ExecuteBatchRequest) (response *vtgatepb.ExecuteBatchResponse, err error) {
 	defer vtg.server.HandlePanic(&err)
 	ctx = withCallerIDContext(ctx, request.CallerId)
-	results := make([]sqltypes.QueryResponse, len(request.Queries))
 	sqlQueries := make([]string, len(request.Queries))
 	bindVars := make([]map[string]*querypb.BindVariable, len(request.Queries))
 	for queryNum, query := range request.Queries {
@@ -143,7 +142,7 @@ func (vtg *VTGate) ExecuteBatch(ctx context.Context, request *vtgatepb.ExecuteBa
 	if session.Options == nil {
 		session.Options = request.Options
 	}
-	session, results, err = vtg.server.ExecuteBatch(ctx, session, sqlQueries, bindVars)
+	session, results, err := vtg.server.ExecuteBatch(ctx, session, sqlQueries, bindVars)
 	return &vtgatepb.ExecuteBatchResponse{
 		Results: sqltypes.QueryResponsesToProto3(results),
 		Session: session,
@@ -168,6 +167,8 @@ func (vtg *VTGate) StreamExecute(request *vtgatepb.StreamExecuteRequest, stream 
 		session.Options = request.Options
 	}
 	vtgErr := vtg.server.StreamExecute(ctx, session, request.Query.Sql, request.Query.BindVariables, func(value *sqltypes.Result) error {
+		// Send is not safe to call concurrently, but vtgate
+		// guarantees that it's not.
 		return stream.Send(&vtgatepb.StreamExecuteResponse{
 			Result: sqltypes.ResultToProto3(value),
 		})
@@ -303,6 +304,8 @@ func (vtg *VTGate) StreamExecuteShards(request *vtgatepb.StreamExecuteShardsRequ
 		request.TabletType,
 		request.Options,
 		func(value *sqltypes.Result) error {
+			// Send is not safe to call concurrently, but vtgate
+			// guarantees that it's not.
 			return stream.Send(&vtgatepb.StreamExecuteShardsResponse{
 				Result: sqltypes.ResultToProto3(value),
 			})
@@ -323,6 +326,8 @@ func (vtg *VTGate) StreamExecuteKeyspaceIds(request *vtgatepb.StreamExecuteKeysp
 		request.TabletType,
 		request.Options,
 		func(value *sqltypes.Result) error {
+			// Send is not safe to call concurrently, but vtgate
+			// guarantees that it's not.
 			return stream.Send(&vtgatepb.StreamExecuteKeyspaceIdsResponse{
 				Result: sqltypes.ResultToProto3(value),
 			})
@@ -343,6 +348,8 @@ func (vtg *VTGate) StreamExecuteKeyRanges(request *vtgatepb.StreamExecuteKeyRang
 		request.TabletType,
 		request.Options,
 		func(value *sqltypes.Result) error {
+			// Send is not safe to call concurrently, but vtgate
+			// guarantees that it's not.
 			return stream.Send(&vtgatepb.StreamExecuteKeyRangesResponse{
 				Result: sqltypes.ResultToProto3(value),
 			})
@@ -404,6 +411,8 @@ func (vtg *VTGate) MessageStream(request *vtgatepb.MessageStreamRequest, stream 
 	defer vtg.server.HandlePanic(&err)
 	ctx := withCallerIDContext(stream.Context(), request.CallerId)
 	vtgErr := vtg.server.MessageStream(ctx, request.Keyspace, request.Shard, request.KeyRange, request.Name, func(qr *sqltypes.Result) error {
+		// Send is not safe to call concurrently, but vtgate
+		// guarantees that it's not.
 		return stream.Send(&querypb.MessageStreamResponse{
 			Result: sqltypes.ResultToProto3(qr),
 		})
@@ -488,6 +497,8 @@ func (vtg *VTGate) UpdateStream(request *vtgatepb.UpdateStreamRequest, stream vt
 		request.Timestamp,
 		request.Event,
 		func(event *querypb.StreamEvent, resumeTimestamp int64) error {
+			// Send is not safe to call concurrently, but vtgate
+			// guarantees that it's not.
 			return stream.Send(&vtgatepb.UpdateStreamResponse{
 				Event:           event,
 				ResumeTimestamp: resumeTimestamp,

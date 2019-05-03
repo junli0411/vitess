@@ -26,35 +26,52 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/acl"
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/streamlog"
-	"github.com/youtube/vitess/go/sync2"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/acl"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/streamlog"
+	"vitess.io/vitess/go/sync2"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 var (
 	// waits stores how many times a transaction was queued because another
 	// transaction was already in flight for the same row (range).
 	// The key of the map is the table name of the query.
-	waits = stats.NewCounters("TxSerializerWaits")
+	waits = stats.NewCountersWithSingleLabel(
+		"TxSerializerWaits",
+		"Number of times a transaction was queued because another transaction was already in flight for the same row range",
+		"table_name")
 	// waitsDryRun is similar as "waits": In dry-run mode it records how many
 	// transactions would have been queued.
 	// The key of the map is the table name of the query.
-	waitsDryRun = stats.NewCounters("TxSerializerWaitsDryRun")
+	waitsDryRun = stats.NewCountersWithSingleLabel(
+		"TxSerializerWaitsDryRun",
+		"Dry run number of transactions that would've been queued",
+		"table_name")
 
 	// queueExceeded counts per table how many transactions were rejected because
 	// the max queue size per row (range) was exceeded.
-	queueExceeded = stats.NewCounters("TxSerializerQueueExceeded")
+	queueExceeded = stats.NewCountersWithSingleLabel(
+		"TxSerializerQueueExceeded",
+		"Number of transactions that were rejected because the max queue size per row range was exceeded",
+		"table_name")
 	// queueExceededDryRun counts in dry-run mode how many transactions would have
 	// been rejected due to exceeding the max queue size per row (range).
-	queueExceededDryRun = stats.NewCounters("TxSerializerQueueExceededDryRun")
+	queueExceededDryRun = stats.NewCountersWithSingleLabel(
+		"TxSerializerQueueExceededDryRun",
+		"Dry-run Number of transactions that were rejcted because the max queue size was exceeded",
+		"table_name")
+
 	// globalQueueExceeded is the same as queueExceeded but for the global queue.
-	globalQueueExceeded       = stats.NewInt("TxSerializerGlobalQueueExceeded")
-	globalQueueExceededDryRun = stats.NewInt("TxSerializerGlobalQueueExceededDryRun")
+	globalQueueExceeded = stats.NewCounter(
+		"TxSerializerGlobalQueueExceeded",
+		"Number of transactions that were rejected on the global queue because of exceeding the max queue size per row range")
+	globalQueueExceededDryRun = stats.NewCounter(
+		"TxSerializerGlobalQueueExceededDryRun",
+		"Dry-run stats for TxSerializerGlobalQueueExceeded")
 )
 
 // TxSerializer serializes incoming transactions which target the same row range
@@ -95,17 +112,17 @@ type TxSerializer struct {
 // New returns a TxSerializer object.
 func New(dryRun bool, maxQueueSize, maxGlobalQueueSize, concurrentTransactions int) *TxSerializer {
 	return &TxSerializer{
-		ConsolidatorCache:      sync2.NewConsolidatorCache(1000),
-		dryRun:                 dryRun,
-		maxQueueSize:           maxQueueSize,
-		maxGlobalQueueSize:     maxGlobalQueueSize,
-		concurrentTransactions: concurrentTransactions,
+		ConsolidatorCache:            sync2.NewConsolidatorCache(1000),
+		dryRun:                       dryRun,
+		maxQueueSize:                 maxQueueSize,
+		maxGlobalQueueSize:           maxGlobalQueueSize,
+		concurrentTransactions:       concurrentTransactions,
 		log:                          logutil.NewThrottledLogger("HotRowProtection", 5*time.Second),
 		logDryRun:                    logutil.NewThrottledLogger("HotRowProtection DryRun", 5*time.Second),
 		logWaitsDryRun:               logutil.NewThrottledLogger("HotRowProtection Waits DryRun", 5*time.Second),
 		logQueueExceededDryRun:       logutil.NewThrottledLogger("HotRowProtection QueueExceeded DryRun", 5*time.Second),
 		logGlobalQueueExceededDryRun: logutil.NewThrottledLogger("HotRowProtection GlobalQueueExceeded DryRun", 5*time.Second),
-		queues: make(map[string]*queue),
+		queues:                       make(map[string]*queue),
 	}
 }
 

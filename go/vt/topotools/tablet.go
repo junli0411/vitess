@@ -39,13 +39,13 @@ import (
 
 	"golang.org/x/net/context"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/vt/hook"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/hook"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // ConfigureTabletHook configures the right parameters for a hook
@@ -90,7 +90,7 @@ func CheckOwnership(oldTablet, newTablet *topodatapb.Tablet) error {
 func DeleteTablet(ctx context.Context, ts *topo.Server, tablet *topodatapb.Tablet) error {
 	// try to remove replication data, no fatal if we fail
 	if err := topo.DeleteTabletReplicationData(ctx, ts, tablet); err != nil {
-		if err == topo.ErrNoNode {
+		if topo.IsErrType(err, topo.NoNode) {
 			log.V(6).Infof("no ShardReplication object for cell %v", tablet.Alias.Cell)
 			err = nil
 		}

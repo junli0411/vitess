@@ -26,21 +26,22 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/acl"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/schemamanager"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vtctl"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
-	"github.com/youtube/vitess/go/vt/workflow"
-	"github.com/youtube/vitess/go/vt/wrangler"
+	"vitess.io/vitess/go/acl"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/schemamanager"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vtctl"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
+	"vitess.io/vitess/go/vt/workflow"
+	"vitess.io/vitess/go/vt/wrangler"
 
-	logutilpb "github.com/youtube/vitess/go/vt/proto/logutil"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/vt/mysqlctl"
+	logutilpb "vitess.io/vitess/go/vt/proto/logutil"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 var (
@@ -80,7 +81,7 @@ func handleCollection(collection string, getFunc func(*http.Request) (interface{
 		// Get the requested object.
 		obj, err := getFunc(r)
 		if err != nil {
-			if err == topo.ErrNoNode {
+			if topo.IsErrType(err, topo.NoNode) {
 				http.NotFound(w, r)
 				return nil
 			}
@@ -152,7 +153,7 @@ func initAPI(ctx context.Context, ts *topo.Server, actions *ActionRepository, re
 			// Perform an action on a keyspace.
 		case "POST":
 			if keyspace == "" {
-				return nil, errors.New("A POST request needs a keyspace in the URL")
+				return nil, errors.New("a POST request needs a keyspace in the URL")
 			}
 			if err := r.ParseForm(); err != nil {
 				return nil, err
@@ -160,12 +161,58 @@ func initAPI(ctx context.Context, ts *topo.Server, actions *ActionRepository, re
 
 			action := r.FormValue("action")
 			if action == "" {
-				return nil, errors.New("A POST request must specify action")
+				return nil, errors.New("a POST request must specify action")
 			}
 			return actions.ApplyKeyspaceAction(ctx, action, keyspace, r), nil
 		default:
 			return nil, fmt.Errorf("unsupported HTTP method: %v", r.Method)
 		}
+	})
+
+	handleCollection("keyspace", func(r *http.Request) (interface{}, error) {
+		// Valid requests: api/keyspace/my_ks/tablets (all shards)
+		// Valid requests: api/keyspace/my_ks/tablets/-80 (specific shard)
+		itemPath := getItemPath(r.URL.Path)
+		parts := strings.SplitN(itemPath, "/", 3)
+
+		malformedRequestError := fmt.Errorf("invalid keyspace path: %q  expected path: /keyspace/<keyspace>/tablets or /keyspace/<keyspace>/tablets/<shard>", itemPath)
+		if len(parts) < 2 {
+			return nil, malformedRequestError
+		}
+		if parts[1] != "tablets" {
+			return nil, malformedRequestError
+		}
+
+		keyspace := parts[0]
+		if keyspace == "" {
+			return nil, errors.New("keyspace is required")
+		}
+		var shardNames []string
+		if len(parts) > 2 && parts[2] != "" {
+			shardNames = []string{parts[2]}
+		} else {
+			var err error
+			shardNames, err = ts.GetShardNames(ctx, keyspace)
+			if err != nil {
+				return nil, err
+			}
+		}
+		tablets := [](*topodatapb.Tablet){}
+		for _, shard := range shardNames {
+			// Get tablets for this shard.
+			tabletAliases, err := ts.FindAllTabletAliasesInShard(ctx, keyspace, shard)
+			if err != nil && !topo.IsErrType(err, topo.PartialResult) {
+				return nil, err
+			}
+			for _, tabletAlias := range tabletAliases {
+				t, err := ts.GetTablet(ctx, tabletAlias)
+				if err != nil {
+					return nil, err
+				}
+				tablets = append(tablets, t.Tablet)
+			}
+		}
+		return tablets, nil
 	})
 
 	// Shards
@@ -228,7 +275,7 @@ func initAPI(ctx context.Context, ts *topo.Server, actions *ActionRepository, re
 		if keyspace != "" {
 			srvKeyspace, err := ts.GetSrvKeyspace(ctx, cell, keyspace)
 			if err != nil {
-				return nil, fmt.Errorf("Can't get server keyspace: %v", err)
+				return nil, fmt.Errorf("can't get server keyspace: %v", err)
 			}
 			return srvKeyspace, nil
 		}
@@ -275,13 +322,13 @@ func initAPI(ctx context.Context, ts *topo.Server, actions *ActionRepository, re
 				}
 				if cell != "" {
 					result, err := ts.FindAllTabletAliasesInShardByCell(ctx, keyspace, shard, []string{cell})
-					if err != nil && err != topo.ErrPartialResult {
+					if err != nil && !topo.IsErrType(err, topo.PartialResult) {
 						return result, err
 					}
 					return result, nil
 				}
 				result, err := ts.FindAllTabletAliasesInShard(ctx, keyspace, shard)
-				if err != nil && err != topo.ErrPartialResult {
+				if err != nil && !topo.IsErrType(err, topo.PartialResult) {
 					return result, err
 				}
 				return result, nil
@@ -453,8 +500,7 @@ func initAPI(ctx context.Context, ts *topo.Server, actions *ActionRepository, re
 		logstream := logutil.NewMemoryLogger()
 
 		wr := wrangler.New(logstream, ts, tmClient)
-		// TODO(enisoc): Context for run command should be request-scoped.
-		err := vtctl.RunCommand(ctx, wr, args)
+		err := vtctl.RunCommand(r.Context(), wr, args)
 		if err != nil {
 			resp.Error = err.Error()
 		}
@@ -505,7 +551,7 @@ func initAPI(ctx context.Context, ts *topo.Server, actions *ActionRepository, re
 		}
 
 		resp := make(map[string]interface{})
-		resp["activeReparents"] = !*vtctl.DisableActiveReparents
+		resp["activeReparents"] = !*mysqlctl.DisableActiveReparents
 		resp["showStatus"] = *enableRealtimeStats
 		resp["showTopologyCRUD"] = *showTopologyCRUD
 		resp["showWorkflows"] = *workflowManagerInit

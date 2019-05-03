@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 #
 # Copyright 2017 Google Inc.
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -24,7 +24,7 @@ reshard a table that has textual primary key columns (e.g. VARCHAR).
 This is the case for the "timestamps" table in this end-to-end test.
 
 The reason why only LegacySplitClone supports this use case is because the new
-resharding clone code (as of https://github.com/youtube/vitess/pull/1796)
+resharding clone code (as of https://github.com/vitessio/vitess/pull/1796)
 requires to sort rows by their primary key. Whereas LegacySplitClone does a
 simple copy and always assumes that the tables on the destination are empty,
 the SplitClone command can diff the source and destination tables. In case of
@@ -386,8 +386,6 @@ primary key (name)
     utils.run_vtctl(['ChangeSlaveType', shard_1_rdonly1.tablet_alias,
                      'rdonly'], auto_log=True)
 
-    # TODO(alainjobart): experiment with the dontStartBinlogPlayer option
-
     # check the startup values are in the right place
     self._check_startup_values()
 
@@ -403,10 +401,12 @@ primary key (name)
     self.check_binlog_server_vars(shard_1_slave1, horizontal=True)
 
     # Check that the throttler was enabled.
+    # The stream id is hard-coded as 1, which is the first id generated
+    # through auto-inc.
     self.check_throttler_service(shard_2_master.rpc_endpoint(),
-                                 ['BinlogPlayer/0'], 9999)
+                                 ['BinlogPlayer/1'], 9999)
     self.check_throttler_service(shard_3_master.rpc_endpoint(),
-                                 ['BinlogPlayer/0'], 9999)
+                                 ['BinlogPlayer/1'], 9999)
 
     # testing filtered replication: insert a bunch of data on shard 1,
     # check we get most of it after a few seconds, wait for binlog server
@@ -527,7 +527,7 @@ primary key (name)
     utils.check_tablet_query_service(self, shard_1_rdonly1, False, True)
 
     # then serve replica from the split shards
-    destination_shards = ['test_keyspace/80-c0', 'test_keyspace/c0-']
+    destination_shards = ['80-c0', 'c0-']
 
     utils.run_vtctl(['MigrateServedTypes', 'test_keyspace/80-', 'replica'],
                     auto_log=True)
@@ -549,7 +549,9 @@ primary key (name)
     # Destination tablets would have query service disabled for other
     # reasons than the migration, so check the shard record instead of
     # the tablets directly.
-    utils.check_shard_query_services(self, destination_shards,
+    utils.check_shard_query_services(self, 'test_nj', 'test_keyspace', destination_shards,
+                                     topodata_pb2.REPLICA, False)
+    utils.check_shard_query_services(self, 'test_ny', 'test_keyspace', destination_shards,
                                      topodata_pb2.REPLICA, False)
     utils.check_srv_keyspace('test_nj', 'test_keyspace',
                              'Partitions(master): -80 80-\n'
@@ -566,7 +568,9 @@ primary key (name)
     # Destination tablets would have query service disabled for other
     # reasons than the migration, so check the shard record instead of
     # the tablets directly
-    utils.check_shard_query_services(self, destination_shards,
+    utils.check_shard_query_services(self, 'test_nj', 'test_keyspace', destination_shards,
+                                     topodata_pb2.REPLICA, True)
+    utils.check_shard_query_services(self, 'test_ny', 'test_keyspace', destination_shards,
                                      topodata_pb2.REPLICA, True)
     utils.check_srv_keyspace('test_nj', 'test_keyspace',
                              'Partitions(master): -80 80-\n'
@@ -591,10 +595,10 @@ primary key (name)
 
     # mock with the SourceShard records to test 'vtctl SourceShardDelete'
     # and 'vtctl SourceShardAdd'
-    utils.run_vtctl(['SourceShardDelete', 'test_keyspace/c0-', '0'],
+    utils.run_vtctl(['SourceShardDelete', 'test_keyspace/c0-', '1'],
                     auto_log=True)
     utils.run_vtctl(['SourceShardAdd', '--key_range=80-',
-                     'test_keyspace/c0-', '0', 'test_keyspace/80-'],
+                     'test_keyspace/c0-', '1', 'test_keyspace/80-'],
                     auto_log=True)
 
     # then serve master from the split shards, make sure the source master's
@@ -622,7 +626,7 @@ primary key (name)
     utils.run_vtctl(['DeleteTablet', '-allow_master',
                      shard_1_master.tablet_alias], auto_log=True)
 
-    # rebuild the serving graph, all mentions of the old shards shoud be gone
+    # rebuild the serving graph, all mentions of the old shards should be gone
     utils.run_vtctl(
         ['RebuildKeyspaceGraph', 'test_keyspace'], auto_log=True)
 

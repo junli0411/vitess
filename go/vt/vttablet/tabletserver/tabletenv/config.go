@@ -22,13 +22,12 @@ import (
 	"fmt"
 	"time"
 
-	log "github.com/golang/glog"
-
 	"github.com/golang/protobuf/proto"
 
-	"github.com/youtube/vitess/go/flagutil"
-	"github.com/youtube/vitess/go/streamlog"
-	"github.com/youtube/vitess/go/vt/throttler"
+	"vitess.io/vitess/go/flagutil"
+	"vitess.io/vitess/go/streamlog"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/throttler"
 )
 
 var (
@@ -57,13 +56,17 @@ func init() {
 	flag.IntVar(&Config.WarnResultSize, "queryserver-config-warn-result-size", DefaultQsConfig.WarnResultSize, "query server result size warning threshold, warn if number of rows returned from vttablet for non-streaming queries exceeds this")
 	flag.IntVar(&Config.MaxDMLRows, "queryserver-config-max-dml-rows", DefaultQsConfig.MaxDMLRows, "query server max dml rows per statement, maximum number of rows allowed to return at a time for an update or delete with either 1) an equality where clauses on primary keys, or 2) a subselect statement. For update and delete statements in above two categories, vttablet will split the original query into multiple small queries based on this configuration value. ")
 	flag.BoolVar(&Config.PassthroughDMLs, "queryserver-config-passthrough-dmls", DefaultQsConfig.PassthroughDMLs, "query server pass through all dml statements without rewriting")
+	flag.BoolVar(&Config.AllowUnsafeDMLs, "queryserver-config-allowunsafe-dmls", DefaultQsConfig.AllowUnsafeDMLs, "query server allow unsafe dml statements")
 
 	flag.IntVar(&Config.StreamBufferSize, "queryserver-config-stream-buffer-size", DefaultQsConfig.StreamBufferSize, "query server stream buffer size, the maximum number of bytes sent from vttablet for each stream call. It's recommended to keep this value in sync with vtgate's stream_buffer_size.")
 	flag.IntVar(&Config.QueryPlanCacheSize, "queryserver-config-query-cache-size", DefaultQsConfig.QueryPlanCacheSize, "query server query cache size, maximum number of queries to be cached. vttablet analyzes every incoming query and generate a query plan, these plans are being cached in a lru cache. This config controls the capacity of the lru cache.")
 	flag.Float64Var(&Config.SchemaReloadTime, "queryserver-config-schema-reload-time", DefaultQsConfig.SchemaReloadTime, "query server schema reload time, how often vttablet reloads schemas from underlying MySQL instance in seconds. vttablet keeps table schemas in its own memory and periodically refreshes it from MySQL. This config controls the reload time.")
 	flag.Float64Var(&Config.QueryTimeout, "queryserver-config-query-timeout", DefaultQsConfig.QueryTimeout, "query server query timeout (in seconds), this is the query timeout in vttablet side. If a query takes more than this timeout, it will be killed.")
+	flag.Float64Var(&Config.QueryPoolTimeout, "queryserver-config-query-pool-timeout", DefaultQsConfig.QueryPoolTimeout, "query server query pool timeout (in seconds), it is how long vttablet waits for a connection from the query pool. If set to 0 (default) then the overall query timeout is used instead.")
 	flag.Float64Var(&Config.TxPoolTimeout, "queryserver-config-txpool-timeout", DefaultQsConfig.TxPoolTimeout, "query server transaction pool timeout, it is how long vttablet waits if tx pool is full")
 	flag.Float64Var(&Config.IdleTimeout, "queryserver-config-idle-timeout", DefaultQsConfig.IdleTimeout, "query server idle timeout (in seconds), vttablet manages various mysql connection pools. This config means if a connection has not been used in given idle timeout, this connection will be removed from pool. This effectively manages number of connection objects and optimize the pool performance.")
+	flag.IntVar(&Config.QueryPoolWaiterCap, "queryserver-config-query-pool-waiter-cap", DefaultQsConfig.QueryPoolWaiterCap, "query server query pool waiter limit, this is the maximum number of queries that can be queued waiting to get a connection")
+	flag.IntVar(&Config.TxPoolWaiterCap, "queryserver-config-txpool-waiter-cap", DefaultQsConfig.TxPoolWaiterCap, "query server transaction pool waiter limit, this is the maximum number of transactions that can be queued waiting to get a connection")
 	// tableacl related configurations.
 	flag.BoolVar(&Config.StrictTableACL, "queryserver-config-strict-table-acl", DefaultQsConfig.StrictTableACL, "only allow queries that pass table acl checks")
 	flag.BoolVar(&Config.EnableTableACLDryRun, "queryserver-config-enable-table-acl-dry-run", DefaultQsConfig.EnableTableACLDryRun, "If this flag is enabled, tabletserver will emit monitoring metrics and let the request pass regardless of table acl check results")
@@ -96,7 +99,8 @@ func init() {
 	flag.BoolVar(&Config.HeartbeatEnable, "heartbeat_enable", DefaultQsConfig.HeartbeatEnable, "If true, vttablet records (if master) or checks (if replica) the current time of a replication heartbeat in the table _vt.heartbeat. The result is used to inform the serving state of the vttablet via healthchecks.")
 	flag.DurationVar(&Config.HeartbeatInterval, "heartbeat_interval", DefaultQsConfig.HeartbeatInterval, "How frequently to read and write replication heartbeat.")
 
-	flag.BoolVar(&Config.EnforceStrictTransTables, "enforce_strict_trans_tables", DefaultQsConfig.EnforceStrictTransTables, "If true, vttablet requires MySQL to run with STRICT_TRANS_TABLES on. It is recommended to not turn this flag off. Otherwise MySQL may alter your supplied values before saving them to the database.")
+	flag.BoolVar(&Config.EnforceStrictTransTables, "enforce_strict_trans_tables", DefaultQsConfig.EnforceStrictTransTables, "If true, vttablet requires MySQL to run with STRICT_TRANS_TABLES or STRICT_ALL_TABLES on. It is recommended to not turn this flag off. Otherwise MySQL may alter your supplied values before saving them to the database.")
+	flag.BoolVar(&Config.EnableConsolidator, "enable-consolidator", DefaultQsConfig.EnableConsolidator, "This option enables the query consolidator.")
 }
 
 // Init must be called after flag.Parse, and before doing any other operations.
@@ -131,12 +135,16 @@ type TabletConfig struct {
 	WarnResultSize          int
 	MaxDMLRows              int
 	PassthroughDMLs         bool
+	AllowUnsafeDMLs         bool
 	StreamBufferSize        int
 	QueryPlanCacheSize      int
 	SchemaReloadTime        float64
 	QueryTimeout            float64
+	QueryPoolTimeout        float64
 	TxPoolTimeout           float64
 	IdleTimeout             float64
+	QueryPoolWaiterCap      int
+	TxPoolWaiterCap         int
 	StrictTableACL          bool
 	TerseErrors             bool
 	EnableAutoCommit        bool
@@ -164,6 +172,7 @@ type TabletConfig struct {
 	HeartbeatInterval time.Duration
 
 	EnforceStrictTransTables bool
+	EnableConsolidator       bool
 }
 
 // TransactionLimitConfig captures configuration of transaction pool slots
@@ -198,11 +207,15 @@ var DefaultQsConfig = TabletConfig{
 	WarnResultSize:          0,
 	MaxDMLRows:              500,
 	PassthroughDMLs:         false,
+	AllowUnsafeDMLs:         false,
 	QueryPlanCacheSize:      5000,
 	SchemaReloadTime:        30 * 60,
 	QueryTimeout:            30,
+	QueryPoolTimeout:        0,
 	TxPoolTimeout:           1,
 	IdleTimeout:             30 * 60,
+	QueryPoolWaiterCap:      50000,
+	TxPoolWaiterCap:         50000,
 	StreamBufferSize:        32 * 1024,
 	StrictTableACL:          false,
 	TerseErrors:             false,
@@ -234,6 +247,7 @@ var DefaultQsConfig = TabletConfig{
 	HeartbeatInterval: 1 * time.Second,
 
 	EnforceStrictTransTables: true,
+	EnableConsolidator:       true,
 }
 
 // defaultTxThrottlerConfig formats the default throttlerdata.Configuration

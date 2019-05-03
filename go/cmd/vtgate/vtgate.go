@@ -24,17 +24,16 @@ import (
 
 	"golang.org/x/net/context"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/exit"
+	"vitess.io/vitess/go/vt/discovery"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/srvtopo"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vtgate"
 
-	"github.com/youtube/vitess/go/exit"
-	"github.com/youtube/vitess/go/vt/discovery"
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/srvtopo"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vtgate"
-
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 var (
@@ -84,9 +83,11 @@ func main() {
 		}
 	}
 
-	vtg := vtgate.Init(context.Background(), healthCheck, ts, resilientServer, *cell, *retryCount, tabletTypes)
+	vtg := vtgate.Init(context.Background(), healthCheck, resilientServer, *cell, *retryCount, tabletTypes)
 
 	servenv.OnRun(func() {
+		// Flags are parsed now. Parse the template using the actual flag value and overwrite the current template.
+		discovery.ParseTabletURLTemplateFromFlag()
 		addStatusParts(vtg)
 	})
 	servenv.RunDefault()

@@ -32,8 +32,8 @@ import (
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
-	"github.com/youtube/vitess/go/trace"
-	"github.com/youtube/vitess/go/vt/mysqlctl/backupstorage"
+	"vitess.io/vitess/go/trace"
+	"vitess.io/vitess/go/vt/mysqlctl/backupstorage"
 )
 
 var (
@@ -66,7 +66,7 @@ func (bh *GCSBackupHandle) Name() string {
 }
 
 // AddFile implements BackupHandle.
-func (bh *GCSBackupHandle) AddFile(ctx context.Context, filename string) (io.WriteCloser, error) {
+func (bh *GCSBackupHandle) AddFile(ctx context.Context, filename string, filesize int64) (io.WriteCloser, error) {
 	if bh.readOnly {
 		return nil, fmt.Errorf("AddFile cannot be called on read-only backup")
 	}
@@ -230,7 +230,7 @@ func (bs *GCSBackupStorage) client(ctx context.Context) (*storage.Client, error)
 		// the creation context, so we create a new one, but
 		// keep the span information.
 		ctx = trace.CopySpan(context.Background(), ctx)
-		authClient, err := google.DefaultClient(ctx)
+		authClient, err := google.DefaultClient(ctx, storage.ScopeFullControl)
 		if err != nil {
 			return nil, err
 		}

@@ -15,17 +15,26 @@ if ! cd go/vt/sqlparser/ ; then
         exit 1
 fi
 
-goyacc -o $TMP sql.y
-gofmt -w $TMP
+mv $CUR $TMP
+output=`goyacc -o $CUR sql.y`
+
+if [ -n "$output" ]; then
+    echo "Expected empty output from goyacc, got:"
+    echo $output
+    mv $TMP $CUR
+    exit 1
+fi
+
+gofmt -w $CUR
 
 if ! diff -q $CUR $TMP > /dev/null ; then
         echo "ERROR: Regenerated parser $TMP does not match current version $(pwd)/sql.go:"
         diff -u $CUR $TMP
-        rm $TMP
+        mv $TMP $CUR
 
         echo
         echo "Please ensure go and goyacc are up to date and re-run 'make parser' to generate."
         exit 1
 fi
 
-rm $TMP
+mv $TMP $CUR

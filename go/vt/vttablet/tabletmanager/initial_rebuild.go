@@ -17,11 +17,10 @@ limitations under the License.
 package tabletmanager
 
 import (
-	log "github.com/golang/glog"
-
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topotools"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topotools"
 )
 
 // maybeRebuildKeyspace handles the initial rebuild of SrvKeyspace if needed.
@@ -30,12 +29,12 @@ import (
 // for the current cell only.
 func (agent *ActionAgent) maybeRebuildKeyspace(cell, keyspace string) {
 	_, err := agent.TopoServer.GetSrvKeyspace(agent.batchCtx, cell, keyspace)
-	switch err {
-	case nil:
+	switch {
+	case err == nil:
 		// SrvKeyspace exists, we're done
 		log.Infof("SrvKeyspace(%v,%v) exists, not building it", cell, keyspace)
 		return
-	case topo.ErrNoNode:
+	case topo.IsErrType(err, topo.NoNode):
 		log.Infof("SrvKeyspace(%v,%v) doesn't exist, rebuilding it", cell, keyspace)
 		// SrvKeyspace doesn't exist, we'll try to rebuild it
 	default:

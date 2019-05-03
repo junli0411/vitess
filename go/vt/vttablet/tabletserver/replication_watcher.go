@@ -20,26 +20,26 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/vt/binlog"
-	"github.com/youtube/vitess/go/vt/binlog/eventtoken"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/vt/binlog"
+	"vitess.io/vitess/go/vt/binlog/eventtoken"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	binlogdatapb "github.com/youtube/vitess/go/vt/proto/binlogdata"
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 // ReplicationWatcher is a tabletserver service that watches the
 // replication stream. It can tell you the current event token,
 // and it will trigger schema reloads if a DDL is encountered.
 type ReplicationWatcher struct {
-	dbconfigs dbconfigs.DBConfigs
+	dbconfigs *dbconfigs.DBConfigs
 
 	// Life cycle management vars
 	isOpen bool
@@ -68,18 +68,21 @@ func NewReplicationWatcher(se *schema.Engine, config tabletenv.TabletConfig) *Re
 			}
 			return ""
 		}))
-		stats.Publish("EventTokenTimestamp", stats.IntFunc(func() int64 {
-			if e := rpw.EventToken(); e != nil {
-				return e.Timestamp
-			}
-			return 0
-		}))
+		stats.NewGaugeFunc(
+			"EventTokenTimestamp",
+			"Replication watcher event token timestamp",
+			func() int64 {
+				if e := rpw.EventToken(); e != nil {
+					return e.Timestamp
+				}
+				return 0
+			})
 	})
 	return rpw
 }
 
 // InitDBConfig must be called before Open.
-func (rpw *ReplicationWatcher) InitDBConfig(dbcfgs dbconfigs.DBConfigs) {
+func (rpw *ReplicationWatcher) InitDBConfig(dbcfgs *dbconfigs.DBConfigs) {
 	rpw.dbconfigs = dbcfgs
 }
 
@@ -106,16 +109,14 @@ func (rpw *ReplicationWatcher) Close() {
 }
 
 // Process processes the replication stream.
-func (rpw *ReplicationWatcher) Process(ctx context.Context, dbconfigs dbconfigs.DBConfigs) {
+func (rpw *ReplicationWatcher) Process(ctx context.Context, dbconfigs *dbconfigs.DBConfigs) {
 	defer func() {
 		tabletenv.LogError()
 		rpw.wg.Done()
 	}()
 	for {
 		log.Infof("Starting a binlog Streamer from current replication position to monitor binlogs")
-		cp := dbconfigs.Dba
-		cp.DbName = dbconfigs.App.DbName
-		streamer := binlog.NewStreamer(&cp, rpw.se, nil /*clientCharset*/, mysql.Position{}, 0 /*timestamp*/, func(eventToken *querypb.EventToken, statements []binlog.FullBinlogStatement) error {
+		streamer := binlog.NewStreamer(dbconfigs.DbaWithDB(), rpw.se, nil /*clientCharset*/, mysql.Position{}, 0 /*timestamp*/, func(eventToken *querypb.EventToken, statements []binlog.FullBinlogStatement) error {
 			// Save the event token.
 			rpw.mu.Lock()
 			rpw.eventToken = eventToken

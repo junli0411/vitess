@@ -17,49 +17,44 @@ limitations under the License.
 package tabletserver
 
 import (
-	"flag"
 	"fmt"
 	"io"
 	"strings"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/hack"
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/trace"
-	"github.com/youtube/vitess/go/vt/callerid"
-	"github.com/youtube/vitess/go/vt/callinfo"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/tableacl"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/connpool"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/messager"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/planbuilder"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/rules"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/trace"
+	"vitess.io/vitess/go/vt/callerid"
+	"vitess.io/vitess/go/vt/callinfo"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/tableacl"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/connpool"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/messager"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/planbuilder"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/rules"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
-
-// TODO(sougou): remove after affected parties have transitioned to new behavior.
-var legacyTableACL = flag.Bool("legacy-table-acl", false, "deprecated: this flag can be used to revert to the older table ACL behavior, which checked access for at most one table")
 
 // QueryExecutor is used for executing a query request.
 type QueryExecutor struct {
-	query            string
-	trailingComments string
-	bindVars         map[string]*querypb.BindVariable
-	transactionID    int64
-	options          *querypb.ExecuteOptions
-	plan             *TabletPlan
-	ctx              context.Context
-	logStats         *tabletenv.LogStats
-	tsv              *TabletServer
+	query          string
+	marginComments sqlparser.MarginComments
+	bindVars       map[string]*querypb.BindVariable
+	transactionID  int64
+	options        *querypb.ExecuteOptions
+	plan           *TabletPlan
+	ctx            context.Context
+	logStats       *tabletenv.LogStats
+	tsv            *TabletServer
 }
 
 var sequenceFields = []*querypb.Field{
@@ -75,15 +70,23 @@ func (qre *QueryExecutor) Execute() (reply *sqltypes.Result, err error) {
 	planName := qre.plan.PlanID.String()
 	qre.logStats.PlanType = planName
 	defer func(start time.Time) {
-		duration := time.Now().Sub(start)
+		duration := time.Since(start)
 		tabletenv.QueryStats.Add(planName, duration)
 		tabletenv.RecordUserQuery(qre.ctx, qre.plan.TableName(), "Execute", int64(duration))
 
+		mysqlTime := qre.logStats.MysqlResponseTime
+		tableName := qre.plan.TableName().String()
+		if tableName == "" {
+			tableName = "Join"
+		}
+
 		if reply == nil {
-			qre.plan.AddStats(1, duration, qre.logStats.MysqlResponseTime, 0, 1)
+			qre.tsv.qe.AddStats(planName, tableName, 1, duration, mysqlTime, 0, 1)
+			qre.plan.AddStats(1, duration, mysqlTime, 0, 1)
 			return
 		}
-		qre.plan.AddStats(1, duration, qre.logStats.MysqlResponseTime, int64(reply.RowsAffected), 0)
+		qre.tsv.qe.AddStats(planName, tableName, 1, duration, mysqlTime, int64(reply.RowsAffected), 0)
+		qre.plan.AddStats(1, duration, mysqlTime, int64(reply.RowsAffected), 0)
 		qre.logStats.RowsAffected = int(reply.RowsAffected)
 		qre.logStats.Rows = reply.Rows
 		tabletenv.ResultStats.Add(int64(len(reply.Rows)))
@@ -98,6 +101,16 @@ func (qre *QueryExecutor) Execute() (reply *sqltypes.Result, err error) {
 		return qre.execDDL()
 	case planbuilder.PlanNextval:
 		return qre.execNextval()
+	case planbuilder.PlanSelectImpossible:
+		if qre.plan.Fields != nil {
+			return &sqltypes.Result{
+				Fields:       qre.plan.Fields,
+				RowsAffected: 0,
+				InsertID:     0,
+				Rows:         nil,
+				Extras:       nil,
+			}, nil
+		}
 	}
 
 	if qre.transactionID != 0 {
@@ -112,7 +125,7 @@ func (qre *QueryExecutor) Execute() (reply *sqltypes.Result, err error) {
 			if !qre.tsv.qe.allowUnsafeDMLs && (qre.tsv.qe.binlogFormat != connpool.BinlogFormatRow) {
 				return nil, vterrors.Errorf(vtrpcpb.Code_UNIMPLEMENTED, "unsupported: cannot identify primary key of statement")
 			}
-			return qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, nil, false, true)
+			return qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, "", true, true)
 		case planbuilder.PlanInsertPK:
 			return qre.execInsertPK(conn)
 		case planbuilder.PlanInsertMessage:
@@ -128,8 +141,8 @@ func (qre *QueryExecutor) Execute() (reply *sqltypes.Result, err error) {
 		case planbuilder.PlanUpsertPK:
 			return qre.execUpsertPK(conn)
 		case planbuilder.PlanSet:
-			return qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, nil, false, true)
-		case planbuilder.PlanPassSelect, planbuilder.PlanSelectLock:
+			return qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, "", true, true)
+		case planbuilder.PlanPassSelect, planbuilder.PlanSelectLock, planbuilder.PlanSelectImpossible:
 			return qre.execDirect(conn)
 		default:
 			// handled above:
@@ -143,14 +156,14 @@ func (qre *QueryExecutor) Execute() (reply *sqltypes.Result, err error) {
 		}
 	} else {
 		switch qre.plan.PlanID {
-		case planbuilder.PlanPassSelect:
+		case planbuilder.PlanPassSelect, planbuilder.PlanSelectImpossible:
 			return qre.execSelect()
 		case planbuilder.PlanSelectLock:
 			return nil, vterrors.Errorf(vtrpcpb.Code_FAILED_PRECONDITION, "%s disallowed outside transaction", qre.plan.PlanID.String())
 		case planbuilder.PlanSet:
 			return qre.execSet()
 		case planbuilder.PlanOtherRead:
-			conn, connErr := qre.getConn(qre.tsv.qe.conns)
+			conn, connErr := qre.getConn()
 			if connErr != nil {
 				return nil, connErr
 			}
@@ -194,24 +207,36 @@ func (qre *QueryExecutor) Stream(callback func(*sqltypes.Result) error) error {
 
 	defer func(start time.Time) {
 		tabletenv.QueryStats.Record(qre.plan.PlanID.String(), start)
-		tabletenv.RecordUserQuery(qre.ctx, qre.plan.TableName(), "Stream", int64(time.Now().Sub(start)))
+		tabletenv.RecordUserQuery(qre.ctx, qre.plan.TableName(), "Stream", int64(time.Since(start)))
 	}(time.Now())
 
 	if err := qre.checkPermissions(); err != nil {
 		return err
 	}
 
-	conn, err := qre.getConn(qre.tsv.qe.streamConns)
-	if err != nil {
-		return err
+	// if we have a transaction id, let's use the txPool for this query
+	var conn *connpool.DBConn
+	if qre.transactionID != 0 {
+		txConn, err := qre.tsv.te.txPool.Get(qre.transactionID, "for streaming query")
+		if err != nil {
+			return err
+		}
+		defer txConn.Recycle()
+		conn = txConn.DBConn
+	} else {
+		dbConn, err := qre.getStreamConn()
+		if err != nil {
+			return err
+		}
+		defer dbConn.Recycle()
+		conn = dbConn
 	}
-	defer conn.Recycle()
 
 	qd := NewQueryDetail(qre.logStats.Ctx, conn)
 	qre.tsv.qe.streamQList.Add(qd)
 	defer qre.tsv.qe.streamQList.Remove(qd)
 
-	return qre.streamFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, callback)
+	return qre.streamFetch(conn, qre.plan.FullQuery, qre.bindVars, "", callback)
 }
 
 // MessageStream streams messages from a message table.
@@ -221,7 +246,7 @@ func (qre *QueryExecutor) MessageStream(callback func(*sqltypes.Result) error) e
 
 	defer func(start time.Time) {
 		tabletenv.QueryStats.Record(qre.plan.PlanID.String(), start)
-		tabletenv.RecordUserQuery(qre.ctx, qre.plan.TableName(), "MessageStream", int64(time.Now().Sub(start)))
+		tabletenv.RecordUserQuery(qre.ctx, qre.plan.TableName(), "MessageStream", int64(time.Since(start)))
 	}(time.Now())
 
 	if err := qre.checkPermissions(); err != nil {
@@ -250,7 +275,7 @@ func (qre *QueryExecutor) execDmlAutoCommit() (reply *sqltypes.Result, err error
 			if !qre.tsv.qe.allowUnsafeDMLs && (qre.tsv.qe.binlogFormat != connpool.BinlogFormatRow) {
 				return nil, vterrors.Errorf(vtrpcpb.Code_UNIMPLEMENTED, "unsupported: cannot identify primary key of statement")
 			}
-			reply, err = qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, nil, false, true)
+			reply, err = qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, "", true, true)
 		case planbuilder.PlanInsertPK:
 			reply, err = qre.execInsertPK(conn)
 		case planbuilder.PlanInsertMessage:
@@ -271,12 +296,14 @@ func (qre *QueryExecutor) execDmlAutoCommit() (reply *sqltypes.Result, err error
 }
 
 func (qre *QueryExecutor) execAsTransaction(f func(conn *TxConnection) (*sqltypes.Result, error)) (reply *sqltypes.Result, err error) {
-	conn, err := qre.tsv.te.txPool.LocalBegin(qre.ctx, qre.options)
+	conn, beginSQL, err := qre.tsv.te.txPool.LocalBegin(qre.ctx, qre.options)
 	if err != nil {
 		return nil, err
 	}
 	defer qre.tsv.te.txPool.LocalConclude(qre.ctx, conn)
-	qre.logStats.AddRewrittenSQL("begin", time.Now())
+	if beginSQL != "" {
+		qre.logStats.AddRewrittenSQL(beginSQL, time.Now())
+	}
 
 	reply, err = f(conn)
 
@@ -286,8 +313,13 @@ func (qre *QueryExecutor) execAsTransaction(f func(conn *TxConnection) (*sqltype
 		qre.logStats.AddRewrittenSQL("rollback", start)
 		return nil, err
 	}
-	err = qre.tsv.te.txPool.LocalCommit(qre.ctx, conn, qre.tsv.messager)
-	qre.logStats.AddRewrittenSQL("commit", start)
+	commitSQL, err := qre.tsv.te.txPool.LocalCommit(qre.ctx, conn, qre.tsv.messager)
+
+	// As above LocalCommit is a no-op for autocommmit so don't log anything.
+	if commitSQL != "" {
+		qre.logStats.AddRewrittenSQL(commitSQL, start)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -318,6 +350,11 @@ func (qre *QueryExecutor) checkPermissions() error {
 		return vterrors.Errorf(vtrpcpb.Code_FAILED_PRECONDITION, "disallowed due to rule: %s", desc)
 	}
 
+	// Skip ACL check for queries against the dummy dual table
+	if qre.plan.TableName().String() == "dual" {
+		return nil
+	}
+
 	// Skip the ACL check if the connecting user is an exempted superuser.
 	// Necessary to whitelist e.g. direct vtworker access.
 	if qre.tsv.qe.exemptACL != nil && qre.tsv.qe.exemptACL.IsMember(&querypb.VTGateCallerID{Username: username}) {
@@ -339,15 +376,9 @@ func (qre *QueryExecutor) checkPermissions() error {
 		return nil
 	}
 
-	if *legacyTableACL {
-		if !qre.plan.TableName().IsEmpty() {
-			return qre.checkAccess(qre.plan.LegacyAuthorized, qre.plan.TableName().String(), callerID)
-		}
-	} else {
-		for i, auth := range qre.plan.Authorized {
-			if err := qre.checkAccess(auth, qre.plan.Permissions[i].TableName, callerID); err != nil {
-				return err
-			}
+	for i, auth := range qre.plan.Authorized {
+		if err := qre.checkAccess(auth, qre.plan.Permissions[i].TableName, callerID); err != nil {
+			return err
 		}
 	}
 
@@ -377,7 +408,7 @@ func (qre *QueryExecutor) execDDL() (*sqltypes.Result, error) {
 	sql := qre.query
 	var err error
 	if qre.plan.FullQuery != nil {
-		sql, err = qre.generateFinalSQL(qre.plan.FullQuery, qre.bindVars, nil, nil)
+		sql, _, err = qre.generateFinalSQL(qre.plan.FullQuery, qre.bindVars, nil, "")
 		if err != nil {
 			return nil, err
 		}
@@ -387,7 +418,12 @@ func (qre *QueryExecutor) execDDL() (*sqltypes.Result, error) {
 		return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "DDL is not understood")
 	}
 
-	defer qre.tsv.se.Reload(qre.ctx)
+	defer func() {
+		err := qre.tsv.se.Reload(qre.ctx)
+		if err != nil {
+			log.Errorf("failed to reload schema %v", err)
+		}
+	}()
 
 	if qre.transactionID != 0 {
 		conn, err := qre.tsv.te.txPool.Get(qre.transactionID, "DDL begin again")
@@ -395,7 +431,7 @@ func (qre *QueryExecutor) execDDL() (*sqltypes.Result, error) {
 			return nil, err
 		}
 		defer conn.Recycle()
-		result, err := qre.execSQL(conn, sql, false)
+		result, err := qre.execSQL(conn, sql, true)
 		if err != nil {
 			return nil, err
 		}
@@ -407,7 +443,7 @@ func (qre *QueryExecutor) execDDL() (*sqltypes.Result, error) {
 	}
 
 	result, err := qre.execAsTransaction(func(conn *TxConnection) (*sqltypes.Result, error) {
-		return qre.execSQL(conn, sql, false)
+		return qre.execSQL(conn, sql, true)
 	})
 
 	if err != nil {
@@ -442,7 +478,7 @@ func (qre *QueryExecutor) execNextval() (*sqltypes.Result, error) {
 			}
 			nextID, err := sqltypes.ToInt64(qr.Rows[0][0])
 			if err != nil {
-				return nil, fmt.Errorf("error loading sequence %s: %v", tableName, err)
+				return nil, vterrors.Wrapf(err, "error loading sequence %s", tableName)
 			}
 			// Initialize SequenceInfo.NextVal if it wasn't already.
 			if t.SequenceInfo.NextVal == 0 {
@@ -450,7 +486,7 @@ func (qre *QueryExecutor) execNextval() (*sqltypes.Result, error) {
 			}
 			cache, err := sqltypes.ToInt64(qr.Rows[0][1])
 			if err != nil {
-				return nil, fmt.Errorf("error loading sequence %s: %v", tableName, err)
+				return nil, vterrors.Wrapf(err, "error loading sequence %s", tableName)
 			}
 			if cache < 1 {
 				return nil, fmt.Errorf("invalid cache value for sequence %s: %d", tableName, cache)
@@ -486,14 +522,14 @@ func (qre *QueryExecutor) execNextval() (*sqltypes.Result, error) {
 // execDirect is for reads inside transactions. Always send to MySQL.
 func (qre *QueryExecutor) execDirect(conn *TxConnection) (*sqltypes.Result, error) {
 	if qre.plan.Fields != nil {
-		result, err := qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, nil, false, false)
+		result, err := qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, "", true, false)
 		if err != nil {
 			return nil, err
 		}
 		result.Fields = qre.plan.Fields
 		return result, nil
 	}
-	return qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, nil, true, false)
+	return qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, "", true, false)
 }
 
 // execSelect sends a query to mysql only if another identical query is not running. Otherwise, it waits and
@@ -509,12 +545,12 @@ func (qre *QueryExecutor) execSelect() (*sqltypes.Result, error) {
 		newResult.Fields = qre.plan.Fields
 		return &newResult, nil
 	}
-	conn, err := qre.getConn(qre.tsv.qe.conns)
+	conn, err := qre.getConn()
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Recycle()
-	return qre.dbConnFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, true)
+	return qre.dbConnFetch(conn, qre.plan.FullQuery, qre.bindVars, "", true)
 }
 
 func (qre *QueryExecutor) execInsertPK(conn *TxConnection) (*sqltypes.Result, error) {
@@ -568,7 +604,7 @@ func (qre *QueryExecutor) execInsertMessage(conn *TxConnection) (*sqltypes.Resul
 	if err != nil {
 		return nil, err
 	}
-	readback, err := qre.txFetch(conn, loadMessages, qre.bindVars, extras, nil, false, false)
+	readback, err := qre.txFetch(conn, loadMessages, qre.bindVars, extras, "", true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -588,7 +624,7 @@ func (qre *QueryExecutor) execInsertMessage(conn *TxConnection) (*sqltypes.Resul
 }
 
 func (qre *QueryExecutor) execInsertSubquery(conn *TxConnection) (*sqltypes.Result, error) {
-	innerResult, err := qre.txFetch(conn, qre.plan.Subquery, qre.bindVars, nil, nil, false, false)
+	innerResult, err := qre.txFetch(conn, qre.plan.Subquery, qre.bindVars, nil, "", true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -615,7 +651,7 @@ func (qre *QueryExecutor) execInsertSubquery(conn *TxConnection) (*sqltypes.Resu
 }
 
 func (qre *QueryExecutor) execInsertPKRows(conn *TxConnection, extras map[string]sqlparser.Encodable, pkRows [][]sqltypes.Value) (*sqltypes.Result, error) {
-	var bsc []byte
+	var bsc string
 	// Build comments only if we're not in RBR mode.
 	if qre.tsv.qe.binlogFormat != connpool.BinlogFormatRow {
 		secondaryList, err := buildSecondaryList(qre.plan.Table, pkRows, qre.plan.SecondaryPKValues, qre.bindVars)
@@ -624,13 +660,13 @@ func (qre *QueryExecutor) execInsertPKRows(conn *TxConnection, extras map[string
 		}
 		bsc = buildStreamComment(qre.plan.Table, pkRows, secondaryList)
 	}
-	return qre.txFetch(conn, qre.plan.OuterQuery, qre.bindVars, extras, bsc, false, true)
+	return qre.txFetch(conn, qre.plan.OuterQuery, qre.bindVars, extras, bsc, true, true)
 }
 
 func (qre *QueryExecutor) execUpsertPK(conn *TxConnection) (*sqltypes.Result, error) {
 	// For RBR, upserts are passed through.
 	if qre.tsv.qe.binlogFormat == connpool.BinlogFormatRow {
-		return qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, nil, false, true)
+		return qre.txFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, "", true, true)
 	}
 
 	// For statement or mixed mode, we have to split into two ops.
@@ -642,7 +678,7 @@ func (qre *QueryExecutor) execUpsertPK(conn *TxConnection) (*sqltypes.Result, er
 	// But the part that updates will build it if it gets executed,
 	// because it's the one that can change the primary keys.
 	bsc := buildStreamComment(qre.plan.Table, pkRows, nil)
-	result, err := qre.txFetch(conn, qre.plan.OuterQuery, qre.bindVars, nil, bsc, false, true)
+	result, err := qre.txFetch(conn, qre.plan.OuterQuery, qre.bindVars, nil, bsc, true, true)
 	if err == nil {
 		return result, nil
 	}
@@ -679,7 +715,7 @@ func (qre *QueryExecutor) execDMLPK(conn *TxConnection) (*sqltypes.Result, error
 }
 
 func (qre *QueryExecutor) execDMLSubquery(conn *TxConnection) (*sqltypes.Result, error) {
-	innerResult, err := qre.txFetch(conn, qre.plan.Subquery, qre.bindVars, nil, nil, false, false)
+	innerResult, err := qre.txFetch(conn, qre.plan.Subquery, qre.bindVars, nil, "", true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -707,7 +743,7 @@ func (qre *QueryExecutor) execDMLPKRows(conn *TxConnection, query *sqlparser.Par
 		if secondaryList != nil {
 			secondaryList = secondaryList[i:end]
 		}
-		var bsc []byte
+		var bsc string
 		// Build comments only if we're not in RBR mode.
 		if qre.tsv.qe.binlogFormat != connpool.BinlogFormatRow {
 			bsc = buildStreamComment(qre.plan.Table, pkRows, secondaryList)
@@ -718,7 +754,7 @@ func (qre *QueryExecutor) execDMLPKRows(conn *TxConnection, query *sqlparser.Par
 				Rows:    pkRows,
 			},
 		}
-		r, err := qre.txFetch(conn, query, qre.bindVars, extras, bsc, false, true)
+		r, err := qre.txFetch(conn, query, qre.bindVars, extras, bsc, true, true)
 		if err != nil {
 			return nil, err
 		}
@@ -741,24 +777,39 @@ func (qre *QueryExecutor) execDMLPKRows(conn *TxConnection, query *sqlparser.Par
 }
 
 func (qre *QueryExecutor) execSet() (*sqltypes.Result, error) {
-	conn, err := qre.getConn(qre.tsv.qe.conns)
+	conn, err := qre.getConn()
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Recycle()
-	return qre.dbConnFetch(conn, qre.plan.FullQuery, qre.bindVars, nil, false)
+	return qre.dbConnFetch(conn, qre.plan.FullQuery, qre.bindVars, "", false)
 }
 
-func (qre *QueryExecutor) getConn(pool *connpool.Pool) (*connpool.DBConn, error) {
-	span := trace.NewSpanFromContext(qre.ctx)
-	span.StartLocal("QueryExecutor.getConn")
+func (qre *QueryExecutor) getConn() (*connpool.DBConn, error) {
+	span, ctx := trace.NewSpan(qre.ctx, "QueryExecutor.getConn")
 	defer span.Finish()
 
 	start := time.Now()
-	conn, err := pool.Get(qre.ctx)
+	conn, err := qre.tsv.qe.getQueryConn(ctx)
 	switch err {
 	case nil:
-		qre.logStats.WaitingForConnection += time.Now().Sub(start)
+		qre.logStats.WaitingForConnection += time.Since(start)
+		return conn, nil
+	case connpool.ErrConnPoolClosed:
+		return nil, err
+	}
+	return nil, err
+}
+
+func (qre *QueryExecutor) getStreamConn() (*connpool.DBConn, error) {
+	span, ctx := trace.NewSpan(qre.ctx, "QueryExecutor.getStreamConn")
+	defer span.Finish()
+
+	start := time.Now()
+	conn, err := qre.tsv.qe.streamConns.Get(ctx)
+	switch err {
+	case nil:
+		qre.logStats.WaitingForConnection += time.Since(start)
 		return conn, nil
 	case connpool.ErrConnPoolClosed:
 		return nil, err
@@ -767,37 +818,48 @@ func (qre *QueryExecutor) getConn(pool *connpool.Pool) (*connpool.DBConn, error)
 }
 
 func (qre *QueryExecutor) qFetch(logStats *tabletenv.LogStats, parsedQuery *sqlparser.ParsedQuery, bindVars map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
-	sql, err := qre.generateFinalSQL(parsedQuery, bindVars, nil, nil)
+	sql, sqlWithoutComments, err := qre.generateFinalSQL(parsedQuery, bindVars, nil, "")
 	if err != nil {
 		return nil, err
 	}
-	q, ok := qre.tsv.qe.consolidator.Create(string(sql))
-	if ok {
-		defer q.Broadcast()
-		waitingForConnectionStart := time.Now()
-		conn, err := qre.tsv.qe.conns.Get(qre.ctx)
-		logStats.WaitingForConnection += time.Now().Sub(waitingForConnectionStart)
-		if err != nil {
-			q.Err = err
+	if qre.tsv.qe.enableConsolidator {
+		q, original := qre.tsv.qe.consolidator.Create(string(sqlWithoutComments))
+		if original {
+			defer q.Broadcast()
+			conn, err := qre.getConn()
+
+			if err != nil {
+				q.Err = err
+			} else {
+				defer conn.Recycle()
+				q.Result, q.Err = qre.execSQL(conn, sql, false)
+			}
 		} else {
-			defer conn.Recycle()
-			q.Result, q.Err = qre.execSQL(conn, sql, false)
+			logStats.QuerySources |= tabletenv.QuerySourceConsolidator
+			startTime := time.Now()
+			q.Wait()
+			tabletenv.WaitStats.Record("Consolidations", startTime)
 		}
-	} else {
-		logStats.QuerySources |= tabletenv.QuerySourceConsolidator
-		startTime := time.Now()
-		q.Wait()
-		tabletenv.WaitStats.Record("Consolidations", startTime)
+		if q.Err != nil {
+			return nil, q.Err
+		}
+		return q.Result.(*sqltypes.Result), nil
 	}
-	if q.Err != nil {
-		return nil, q.Err
+	conn, err := qre.getConn()
+	if err != nil {
+		return nil, err
 	}
-	return q.Result.(*sqltypes.Result), nil
+	defer conn.Recycle()
+	res, err := qre.execSQL(conn, sql, false)
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 // txFetch fetches from a TxConnection.
-func (qre *QueryExecutor) txFetch(conn *TxConnection, parsedQuery *sqlparser.ParsedQuery, bindVars map[string]*querypb.BindVariable, extras map[string]sqlparser.Encodable, buildStreamComment []byte, wantfields, record bool) (*sqltypes.Result, error) {
-	sql, err := qre.generateFinalSQL(parsedQuery, bindVars, extras, buildStreamComment)
+func (qre *QueryExecutor) txFetch(conn *TxConnection, parsedQuery *sqlparser.ParsedQuery, bindVars map[string]*querypb.BindVariable, extras map[string]sqlparser.Encodable, buildStreamComment string, wantfields, record bool) (*sqltypes.Result, error) {
+	sql, _, err := qre.generateFinalSQL(parsedQuery, bindVars, extras, buildStreamComment)
 	if err != nil {
 		return nil, err
 	}
@@ -813,8 +875,8 @@ func (qre *QueryExecutor) txFetch(conn *TxConnection, parsedQuery *sqlparser.Par
 }
 
 // dbConnFetch fetches from a connpool.DBConn.
-func (qre *QueryExecutor) dbConnFetch(conn *connpool.DBConn, parsedQuery *sqlparser.ParsedQuery, bindVars map[string]*querypb.BindVariable, buildStreamComment []byte, wantfields bool) (*sqltypes.Result, error) {
-	sql, err := qre.generateFinalSQL(parsedQuery, bindVars, nil, buildStreamComment)
+func (qre *QueryExecutor) dbConnFetch(conn *connpool.DBConn, parsedQuery *sqlparser.ParsedQuery, bindVars map[string]*querypb.BindVariable, buildStreamComment string, wantfields bool) (*sqltypes.Result, error) {
+	sql, _, err := qre.generateFinalSQL(parsedQuery, bindVars, nil, buildStreamComment)
 	if err != nil {
 		return nil, err
 	}
@@ -822,25 +884,32 @@ func (qre *QueryExecutor) dbConnFetch(conn *connpool.DBConn, parsedQuery *sqlpar
 }
 
 // streamFetch performs a streaming fetch.
-func (qre *QueryExecutor) streamFetch(conn *connpool.DBConn, parsedQuery *sqlparser.ParsedQuery, bindVars map[string]*querypb.BindVariable, buildStreamComment []byte, callback func(*sqltypes.Result) error) error {
-	sql, err := qre.generateFinalSQL(parsedQuery, bindVars, nil, buildStreamComment)
+func (qre *QueryExecutor) streamFetch(conn *connpool.DBConn, parsedQuery *sqlparser.ParsedQuery, bindVars map[string]*querypb.BindVariable, buildStreamComment string, callback func(*sqltypes.Result) error) error {
+	sql, _, err := qre.generateFinalSQL(parsedQuery, bindVars, nil, buildStreamComment)
 	if err != nil {
 		return err
 	}
 	return qre.execStreamSQL(conn, sql, callback)
 }
 
-func (qre *QueryExecutor) generateFinalSQL(parsedQuery *sqlparser.ParsedQuery, bindVars map[string]*querypb.BindVariable, extras map[string]sqlparser.Encodable, buildStreamComment []byte) (string, error) {
+func (qre *QueryExecutor) generateFinalSQL(parsedQuery *sqlparser.ParsedQuery, bindVars map[string]*querypb.BindVariable, extras map[string]sqlparser.Encodable, buildStreamComment string) (string, string, error) {
 	bindVars["#maxLimit"] = sqltypes.Int64BindVariable(qre.getLimit(parsedQuery))
-	sql, err := parsedQuery.GenerateQuery(bindVars, extras)
+
+	var buf strings.Builder
+	buf.WriteString(qre.marginComments.Leading)
+
+	query, err := parsedQuery.GenerateQuery(bindVars, extras)
 	if err != nil {
-		return "", vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "%s", err)
+		return "", "", vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "%s", err)
 	}
-	if buildStreamComment != nil {
-		sql = append(sql, buildStreamComment...)
+	buf.WriteString(query)
+	if buildStreamComment != "" {
+		buf.WriteString(buildStreamComment)
 	}
-	sql = append(sql, qre.trailingComments...)
-	return hack.String(sql), nil
+	withoutComments := buf.String()
+	buf.WriteString(qre.marginComments.Trailing)
+	fullSQL := buf.String()
+	return fullSQL, withoutComments, nil
 }
 
 func (qre *QueryExecutor) getLimit(query *sqlparser.ParsedQuery) int64 {
@@ -858,8 +927,11 @@ type poolConn interface {
 }
 
 func (qre *QueryExecutor) execSQL(conn poolConn, sql string, wantfields bool) (*sqltypes.Result, error) {
+	span, ctx := trace.NewSpan(qre.ctx, "QueryExecutor.execSQL")
+	defer span.Finish()
+
 	defer qre.logStats.AddRewrittenSQL(sql, time.Now())
-	res, err := conn.Exec(qre.ctx, sql, int(qre.tsv.qe.maxResultSize.Get()), wantfields)
+	res, err := conn.Exec(ctx, sql, int(qre.tsv.qe.maxResultSize.Get()), wantfields)
 	warnThreshold := qre.tsv.qe.warnResultSize.Get()
 	if res != nil && warnThreshold > 0 && int64(len(res.Rows)) > warnThreshold {
 		callerID := callerid.ImmediateCallerIDFromContext(qre.ctx)
@@ -870,8 +942,15 @@ func (qre *QueryExecutor) execSQL(conn poolConn, sql string, wantfields bool) (*
 }
 
 func (qre *QueryExecutor) execStreamSQL(conn *connpool.DBConn, sql string, callback func(*sqltypes.Result) error) error {
+	span, ctx := trace.NewSpan(qre.ctx, "QueryExecutor.execStreamSQL")
+	trace.AnnotateSQL(span, sql)
+	callBackClosingSpan := func(result *sqltypes.Result) error {
+		defer span.Finish()
+		return callback(result)
+	}
+
 	start := time.Now()
-	err := conn.Stream(qre.ctx, sql, callback, int(qre.tsv.qe.streamBufferSize.Get()), sqltypes.IncludeFieldsOrDefault(qre.options))
+	err := conn.Stream(ctx, sql, callBackClosingSpan, int(qre.tsv.qe.streamBufferSize.Get()), sqltypes.IncludeFieldsOrDefault(qre.options))
 	qre.logStats.AddRewrittenSQL(sql, start)
 	if err != nil {
 		// MySQL error that isn't due to a connection issue

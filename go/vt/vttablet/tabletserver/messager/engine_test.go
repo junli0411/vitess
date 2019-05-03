@@ -26,15 +26,15 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/sync2"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sync2"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 )
 
 var meTable = &schema.Table{
@@ -261,10 +261,7 @@ func newTestEngine(db *fakesqldb.DB) *Engine {
 	tsv := newFakeTabletServer()
 	se := schema.NewEngine(tsv, config)
 	te := NewEngine(tsv, se, config)
-	te.InitDBConfig(dbconfigs.DBConfigs{
-		App:           *db.ConnParams(),
-		SidecarDBName: "_vt",
-	})
+	te.InitDBConfig(dbconfigs.NewTestDBConfigs(*db.ConnParams(), *db.ConnParams(), ""))
 	te.Open()
 	return te
 }

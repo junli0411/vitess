@@ -24,12 +24,14 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
-	"github.com/youtube/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/vterrors"
+
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 // These constants are used to identify the SQL statement type.
+// Changing this list will require reviewing all calls to Preview.
 const (
 	StmtSelect = iota
 	StmtStream
@@ -58,7 +60,7 @@ func Preview(sql string) int {
 	if end := strings.IndexFunc(trimmed, unicode.IsSpace); end != -1 {
 		firstWord = trimmed[:end]
 	}
-
+	firstWord = strings.TrimLeftFunc(firstWord, func(r rune) bool { return !unicode.IsLetter(r) })
 	// Comparison is done in order of priority.
 	loweredFirstWord := strings.ToLower(firstWord)
 	switch loweredFirstWord {
@@ -80,7 +82,7 @@ func Preview(sql string) int {
 	// in the grammar and we are relying on Preview to parse them.
 	// For instance, we don't want: "BEGIN JUNK" to be parsed
 	// as StmtBegin.
-	trimmedNoComments, _ := SplitTrailingComments(trimmed)
+	trimmedNoComments, _ := SplitMarginComments(trimmed)
 	switch strings.ToLower(trimmedNoComments) {
 	case "begin", "start transaction":
 		return StmtBegin
@@ -90,7 +92,7 @@ func Preview(sql string) int {
 		return StmtRollback
 	}
 	switch loweredFirstWord {
-	case "create", "alter", "rename", "drop", "truncate":
+	case "create", "alter", "rename", "drop", "truncate", "flush":
 		return StmtDDL
 	case "set":
 		return StmtSet
@@ -218,7 +220,7 @@ func NewPlanValue(node Expr) (sqltypes.PlanValue, error) {
 		case IntVal:
 			n, err := sqltypes.NewIntegral(string(node.Val))
 			if err != nil {
-				return sqltypes.PlanValue{}, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "%v", err)
+				return sqltypes.PlanValue{}, err
 			}
 			return sqltypes.PlanValue{Value: n}, nil
 		case StrVal:
@@ -226,7 +228,7 @@ func NewPlanValue(node Expr) (sqltypes.PlanValue, error) {
 		case HexVal:
 			v, err := node.HexDecode()
 			if err != nil {
-				return sqltypes.PlanValue{}, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "%v", err)
+				return sqltypes.PlanValue{}, err
 			}
 			return sqltypes.PlanValue{Value: sqltypes.MakeTrusted(sqltypes.VarBinary, v)}, nil
 		}
@@ -253,58 +255,82 @@ func NewPlanValue(node Expr) (sqltypes.PlanValue, error) {
 	return sqltypes.PlanValue{}, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "expression is too complex '%v'", String(node))
 }
 
-// StringIn is a convenience function that returns
-// true if str matches any of the values.
-func StringIn(str string, values ...string) bool {
-	for _, val := range values {
-		if str == val {
-			return true
-		}
-	}
-	return false
+// SetKey is the extracted key from one SetExpr
+type SetKey struct {
+	Key   string
+	Scope string
 }
 
 // ExtractSetValues returns a map of key-value pairs
-// if the query is a SET statement. Values can be int64 or string.
+// if the query is a SET statement. Values can be bool, int64 or string.
 // Since set variable names are case insensitive, all keys are returned
 // as lower case.
-func ExtractSetValues(sql string) (keyValues map[string]interface{}, charset string, scope string, err error) {
+func ExtractSetValues(sql string) (keyValues map[SetKey]interface{}, scope string, err error) {
 	stmt, err := Parse(sql)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", err
 	}
 	setStmt, ok := stmt.(*Set)
 	if !ok {
-		return nil, "", "", fmt.Errorf("ast did not yield *sqlparser.Set: %T", stmt)
+		return nil, "", fmt.Errorf("ast did not yield *sqlparser.Set: %T", stmt)
 	}
-	result := make(map[string]interface{})
+	result := make(map[SetKey]interface{})
 	for _, expr := range setStmt.Exprs {
-		if !expr.Name.Qualifier.IsEmpty() {
-			return nil, "", "", fmt.Errorf("invalid syntax: %v", String(expr.Name))
+		scope := ImplicitStr
+		key := expr.Name.Lowered()
+		switch {
+		case strings.HasPrefix(key, "@@global."):
+			scope = GlobalStr
+			key = strings.TrimPrefix(key, "@@global.")
+		case strings.HasPrefix(key, "@@session."):
+			scope = SessionStr
+			key = strings.TrimPrefix(key, "@@session.")
+		case strings.HasPrefix(key, "@@"):
+			key = strings.TrimPrefix(key, "@@")
 		}
-		key := expr.Name.Name.Lowered()
+
+		if strings.HasPrefix(expr.Name.Lowered(), "@@") {
+			if setStmt.Scope != "" && scope != "" {
+				return nil, "", fmt.Errorf("unsupported in set: mixed using of variable scope")
+			}
+			_, out := NewStringTokenizer(key).Scan()
+			key = string(out)
+		}
+
+		setKey := SetKey{
+			Key:   key,
+			Scope: scope,
+		}
 
 		switch expr := expr.Expr.(type) {
 		case *SQLVal:
 			switch expr.Type {
 			case StrVal:
-				result[key] = string(expr.Val)
+				result[setKey] = strings.ToLower(string(expr.Val))
 			case IntVal:
 				num, err := strconv.ParseInt(string(expr.Val), 0, 64)
 				if err != nil {
-					return nil, "", "", err
+					return nil, "", err
 				}
-				result[key] = num
+				result[setKey] = num
 			default:
-				return nil, "", "", fmt.Errorf("invalid value type: %v", String(expr))
+				return nil, "", fmt.Errorf("invalid value type: %v", String(expr))
 			}
+		case BoolVal:
+			var val int64
+			if expr {
+				val = 1
+			}
+			result[setKey] = val
+		case *ColName:
+			result[setKey] = expr.Name.String()
 		case *NullVal:
-			result[key] = nil
+			result[setKey] = nil
 		case *Default:
-			result[key] = "default"
+			result[setKey] = "default"
 		default:
-			return nil, "", "", fmt.Errorf("invalid syntax: %s", String(expr))
+			return nil, "", fmt.Errorf("invalid syntax: %s", String(expr))
 		}
 	}
-	return result, setStmt.Charset.Lowered(), strings.ToLower(setStmt.Scope), nil
+	return result, strings.ToLower(setStmt.Scope), nil
 }

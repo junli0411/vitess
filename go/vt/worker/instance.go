@@ -17,8 +17,6 @@ limitations under the License.
 package worker
 
 import (
-	"errors"
-	"fmt"
 	"os"
 	"os/signal"
 	"sync"
@@ -26,16 +24,16 @@ import (
 	"time"
 
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/trace"
 
-	log "github.com/golang/glog"
-
-	"github.com/youtube/vitess/go/tb"
-	"github.com/youtube/vitess/go/vt/logutil"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
-	"github.com/youtube/vitess/go/vt/wrangler"
+	"vitess.io/vitess/go/tb"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
+	"vitess.io/vitess/go/vt/wrangler"
 )
 
 // Instance encapsulate the execution state of vtworker.
@@ -111,7 +109,7 @@ func (wi *Instance) setAndStartWorker(ctx context.Context, wrk Worker, wr *wrang
 		// We return FAILED_PRECONDITION to signal that a manual resolution is required.
 		return nil, vterrors.Errorf(vtrpcpb.Code_FAILED_PRECONDITION,
 			"The worker job was stopped %.1f minutes ago, but not reset. Run the 'Reset' command to clear it manually. Job: %v",
-			time.Now().Sub(wi.lastRunStopTime).Minutes(),
+			time.Since(wi.lastRunStopTime).Minutes(),
 			wi.currentWorker)
 	}
 
@@ -132,6 +130,9 @@ func (wi *Instance) setAndStartWorker(ctx context.Context, wrk Worker, wr *wrang
 	// one go function runs the worker, changes state when done
 	go func() {
 		log.Infof("Starting worker...")
+		span, ctx := trace.NewSpan(wi.currentContext, "work")
+		span.Annotate("extra", wrk.State().String())
+		defer span.Finish()
 		var err error
 
 		// Catch all panics and always save the execution state at the end.
@@ -139,7 +140,7 @@ func (wi *Instance) setAndStartWorker(ctx context.Context, wrk Worker, wr *wrang
 			// The recovery code is a copy of servenv.HandlePanic().
 			if x := recover(); x != nil {
 				log.Errorf("uncaught vtworker panic: %v\n%s", x, tb.Stack(4))
-				err = fmt.Errorf("uncaught vtworker panic: %v", x)
+				err = vterrors.Errorf(vtrpcpb.Code_INTERNAL, "uncaught vtworker panic: %v", x)
 			}
 
 			wi.currentWorkerMutex.Lock()
@@ -152,11 +153,11 @@ func (wi *Instance) setAndStartWorker(ctx context.Context, wrk Worker, wr *wrang
 		}()
 
 		// run will take a long time
-		err = wrk.Run(wi.currentContext)
+		err = wrk.Run(ctx)
 
-		// If the context was canceled, include the respective error code.
+		// If the context was canceled, include the respective error c ode.
 		select {
-		case <-wi.currentContext.Done():
+		case <-ctx.Done():
 			// Context is done i.e. probably canceled.
 			if wi.currentContext.Err() == context.Canceled {
 				err = vterrors.Errorf(vtrpcpb.Code_CANCELED, "vtworker command was canceled: %v", err)
@@ -207,7 +208,7 @@ func (wi *Instance) Reset() error {
 		return nil
 	}
 
-	return errors.New("worker still executing")
+	return vterrors.New(vtrpcpb.Code_FAILED_PRECONDITION, "worker still executing")
 }
 
 // Cancel calls the cancel function of the current vtworker job.

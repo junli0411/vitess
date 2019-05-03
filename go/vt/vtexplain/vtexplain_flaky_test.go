@@ -24,8 +24,6 @@ import (
 	"path"
 	"strings"
 	"testing"
-
-	"github.com/youtube/vitess/go/testfiles"
 )
 
 var testOutputTempDir string
@@ -35,16 +33,17 @@ func defaultTestOpts() *Options {
 		ReplicationMode: "ROW",
 		NumShards:       4,
 		Normalize:       true,
+		StrictDDL:       true,
 	}
 }
 
 func initTest(mode string, opts *Options, t *testing.T) {
-	schema, err := ioutil.ReadFile(testfiles.Locate("vtexplain/test-schema.sql"))
+	schema, err := ioutil.ReadFile("testdata/test-schema.sql")
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
 
-	vSchema, err := ioutil.ReadFile(testfiles.Locate("vtexplain/test-vschema.json"))
+	vSchema, err := ioutil.ReadFile("testdata/test-vschema.json")
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -74,13 +73,13 @@ func runTestCase(testcase, mode string, opts *Options, t *testing.T) {
 	t.Logf("vtexplain test: %s mode: %s", testcase, mode)
 	initTest(mode, opts, t)
 
-	sqlFile := testfiles.Locate(fmt.Sprintf("vtexplain/%s-queries.sql", testcase))
+	sqlFile := fmt.Sprintf("testdata/%s-queries.sql", testcase)
 	sql, err := ioutil.ReadFile(sqlFile)
 	if err != nil {
 		t.Fatalf("vtexplain error: %v", err)
 	}
 
-	textOutFile := testfiles.Locate(fmt.Sprintf("vtexplain/%s-output/%s-output.txt", mode, testcase))
+	textOutFile := fmt.Sprintf("testdata/%s-output/%s-output.txt", mode, testcase)
 	textOut, _ := ioutil.ReadFile(textOutFile)
 
 	explains, err := Run(string(sql))
@@ -143,6 +142,16 @@ func TestOptions(t *testing.T) {
 
 	testExplain("options", opts, t)
 }
+func TestTarget(t *testing.T) {
+	opts := &Options{
+		ReplicationMode: "ROW",
+		NumShards:       4,
+		Normalize:       false,
+		Target:          "ks_sharded/40-80",
+	}
+
+	testExplain("target", opts, t)
+}
 
 func TestComments(t *testing.T) {
 	testExplain("comments", defaultTestOpts(), t)
@@ -172,15 +181,17 @@ func TestErrors(t *testing.T) {
 
 		{
 			SQL: "SELECT * FROM table_not_in_schema",
-			Err: "vtexplain execute error in 'SELECT * FROM table_not_in_schema': target: ks_unsharded.-.master, used tablet: explainCell-0 (ks_unsharded/-), table table_not_in_schema not found in schema",
+			Err: "target: ks_unsharded.-.master, used tablet: explainCell-0 (ks_unsharded/-): table table_not_in_schema not found in schema",
 		},
 	}
 
 	for _, test := range tests {
-		_, err := Run(test.SQL)
-		if err == nil || err.Error() != test.Err {
-			t.Errorf("Run(%s): %v, want %s", test.SQL, err, test.Err)
-		}
+		t.Run(test.SQL, func(t *testing.T) {
+			_, err := Run(test.SQL)
+			if err == nil || !strings.Contains(err.Error(), test.Err) {
+				t.Errorf(">> Query: %s\n>> Got: %v\nWant: %s", test.SQL, err, test.Err)
+			}
+		})
 	}
 }
 

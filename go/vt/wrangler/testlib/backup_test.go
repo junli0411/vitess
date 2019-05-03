@@ -24,19 +24,19 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/mysqlctl"
-	"github.com/youtube/vitess/go/vt/mysqlctl/backupstorage"
-	"github.com/youtube/vitess/go/vt/mysqlctl/filebackupstorage"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
-	"github.com/youtube/vitess/go/vt/wrangler"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/mysqlctl"
+	"vitess.io/vitess/go/vt/mysqlctl/backupstorage"
+	"vitess.io/vitess/go/vt/mysqlctl/filebackupstorage"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
+	"vitess.io/vitess/go/vt/wrangler"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 func TestBackupRestore(t *testing.T) {
@@ -56,6 +56,10 @@ func TestBackupRestore(t *testing.T) {
 	db.AddQueryPattern(`SET @@session\.sql_log_bin = .*`, &sqltypes.Result{})
 	db.AddQueryPattern(`CREATE TABLE IF NOT EXISTS _vt\.shard_metadata .*`, &sqltypes.Result{})
 	db.AddQueryPattern(`CREATE TABLE IF NOT EXISTS _vt\.local_metadata .*`, &sqltypes.Result{})
+	db.AddQueryPattern(`ALTER TABLE _vt\.local_metadata .*`, &sqltypes.Result{})
+	db.AddQueryPattern(`ALTER TABLE _vt\.shard_metadata .*`, &sqltypes.Result{})
+	db.AddQueryPattern(`UPDATE _vt\.local_metadata SET db_name=.*`, &sqltypes.Result{})
+	db.AddQueryPattern(`UPDATE _vt\.shard_metadata SET db_name=.*`, &sqltypes.Result{})
 	db.AddQueryPattern(`INSERT INTO _vt\.local_metadata .*`, &sqltypes.Result{})
 
 	// Initialize our temp dirs
@@ -98,23 +102,26 @@ func TestBackupRestore(t *testing.T) {
 	sourceTablet.FakeMysqlDaemon.ReadOnly = true
 	sourceTablet.FakeMysqlDaemon.Replicating = true
 	sourceTablet.FakeMysqlDaemon.CurrentMasterPosition = mysql.Position{
-		GTIDSet: mysql.MariadbGTID{
-			Domain:   2,
-			Server:   123,
-			Sequence: 457,
+		GTIDSet: mysql.MariadbGTIDSet{
+			mysql.MariadbGTID{
+				Domain:   2,
+				Server:   123,
+				Sequence: 457,
+			},
 		},
 	}
 	sourceTablet.FakeMysqlDaemon.ExpectedExecuteSuperQueryList = []string{
 		"STOP SLAVE",
 		"START SLAVE",
 	}
-	sourceTablet.FakeMysqlDaemon.Mycnf = &mysqlctl.Mycnf{
+	sourceTablet.StartActionLoop(t, wr)
+	defer sourceTablet.StopActionLoop(t)
+
+	sourceTablet.Agent.Cnf = &mysqlctl.Mycnf{
 		DataDir:               sourceDataDir,
 		InnodbDataHomeDir:     sourceInnodbDataDir,
 		InnodbLogGroupHomeDir: sourceInnodbLogDir,
 	}
-	sourceTablet.StartActionLoop(t, wr)
-	defer sourceTablet.StopActionLoop(t)
 
 	// run the backup
 	if err := vp.Run([]string{"Backup", topoproto.TabletAliasString(sourceTablet.Tablet.Alias)}); err != nil {
@@ -137,10 +144,12 @@ func TestBackupRestore(t *testing.T) {
 	destTablet.FakeMysqlDaemon.ReadOnly = true
 	destTablet.FakeMysqlDaemon.Replicating = true
 	destTablet.FakeMysqlDaemon.CurrentMasterPosition = mysql.Position{
-		GTIDSet: mysql.MariadbGTID{
-			Domain:   2,
-			Server:   123,
-			Sequence: 457,
+		GTIDSet: mysql.MariadbGTIDSet{
+			mysql.MariadbGTID{
+				Domain:   2,
+				Server:   123,
+				Sequence: 457,
+			},
 		},
 	}
 	destTablet.FakeMysqlDaemon.ExpectedExecuteSuperQueryList = []string{
@@ -150,15 +159,6 @@ func TestBackupRestore(t *testing.T) {
 		"FAKE SET MASTER",
 		"START SLAVE",
 	}
-	destTablet.FakeMysqlDaemon.Mycnf = &mysqlctl.Mycnf{
-		DataDir:               sourceDataDir,
-		InnodbDataHomeDir:     sourceInnodbDataDir,
-		InnodbLogGroupHomeDir: sourceInnodbLogDir,
-		BinLogPath:            path.Join(root, "bin-logs/filename_prefix"),
-		RelayLogPath:          path.Join(root, "relay-logs/filename_prefix"),
-		RelayLogIndexPath:     path.Join(root, "relay-log.index"),
-		RelayLogInfoPath:      path.Join(root, "relay-log.info"),
-	}
 	destTablet.FakeMysqlDaemon.FetchSuperQueryMap = map[string]*sqltypes.Result{
 		"SHOW DATABASES": {},
 	}
@@ -167,6 +167,16 @@ func TestBackupRestore(t *testing.T) {
 
 	destTablet.StartActionLoop(t, wr)
 	defer destTablet.StopActionLoop(t)
+
+	destTablet.Agent.Cnf = &mysqlctl.Mycnf{
+		DataDir:               sourceDataDir,
+		InnodbDataHomeDir:     sourceInnodbDataDir,
+		InnodbLogGroupHomeDir: sourceInnodbLogDir,
+		BinLogPath:            path.Join(root, "bin-logs/filename_prefix"),
+		RelayLogPath:          path.Join(root, "relay-logs/filename_prefix"),
+		RelayLogIndexPath:     path.Join(root, "relay-log.index"),
+		RelayLogInfoPath:      path.Join(root, "relay-log.info"),
+	}
 
 	if err := destTablet.Agent.RestoreData(ctx, logutil.NewConsoleLogger(), false /* deleteBeforeRestore */); err != nil {
 		t.Fatalf("RestoreData failed: %v", err)

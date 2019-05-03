@@ -24,14 +24,14 @@ import (
 
 	"time"
 
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/rules"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/vttablet/queryservice"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/rules"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // BroadcastData is used by the mock Controller to send data
@@ -109,7 +109,7 @@ func (tqsc *Controller) AddStatusPart() {
 }
 
 // InitDBConfig is part of the tabletserver.Controller interface
-func (tqsc *Controller) InitDBConfig(target querypb.Target, dbcfgs dbconfigs.DBConfigs) error {
+func (tqsc *Controller) InitDBConfig(target querypb.Target, dbcfgs *dbconfigs.DBConfigs) error {
 	tqsc.mu.Lock()
 	defer tqsc.mu.Unlock()
 
@@ -187,7 +187,7 @@ func (tqsc *Controller) SchemaEngine() *schema.Engine {
 }
 
 // BroadcastHealth is part of the tabletserver.Controller interface
-func (tqsc *Controller) BroadcastHealth(terTimestamp int64, stats *querypb.RealtimeStats) {
+func (tqsc *Controller) BroadcastHealth(terTimestamp int64, stats *querypb.RealtimeStats, maxCache time.Duration) {
 	tqsc.mu.Lock()
 	defer tqsc.mu.Unlock()
 

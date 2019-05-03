@@ -17,23 +17,24 @@ limitations under the License.
 package messager
 
 import (
+	"sort"
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/sync2"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/connpool"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sync2"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/connpool"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 // TabletService defines the functions of TabletServer
@@ -46,7 +47,7 @@ type TabletService interface {
 
 // Engine is the engine for handling messages.
 type Engine struct {
-	dbconfigs dbconfigs.DBConfigs
+	dbconfigs *dbconfigs.DBConfigs
 
 	mu       sync.Mutex
 	isOpen   bool
@@ -75,7 +76,7 @@ func NewEngine(tsv TabletService, se *schema.Engine, config tabletenv.TabletConf
 }
 
 // InitDBConfig must be called before Open.
-func (me *Engine) InitDBConfig(dbcfgs dbconfigs.DBConfigs) {
+func (me *Engine) InitDBConfig(dbcfgs *dbconfigs.DBConfigs) {
 	me.dbconfigs = dbcfgs
 }
 
@@ -84,7 +85,7 @@ func (me *Engine) Open() error {
 	if me.isOpen {
 		return nil
 	}
-	me.conns.Open(&me.dbconfigs.App, &me.dbconfigs.Dba, &me.dbconfigs.AppDebug)
+	me.conns.Open(me.dbconfigs.AppWithDB(), me.dbconfigs.DbaWithDB(), me.dbconfigs.AppDebugWithDB())
 	me.se.RegisterNotifier("messages", me.schemaChanged)
 	me.isOpen = true
 	return nil
@@ -129,6 +130,12 @@ func (me *Engine) Subscribe(ctx context.Context, name string, send func(*sqltype
 // LockDB obtains db locks for all messages that need to
 // be updated and returns the counterpart unlock function.
 func (me *Engine) LockDB(newMessages map[string][]*MessageRow, changedMessages map[string][]string) func() {
+	// Short-circuit to avoid taking any locks if there's nothing to do.
+	if len(newMessages) == 0 && len(changedMessages) == 0 {
+		return func() {}
+	}
+
+	// Build the set of affected messages tables.
 	combined := make(map[string]struct{})
 	for name := range newMessages {
 		combined[name] = struct{}{}
@@ -136,6 +143,8 @@ func (me *Engine) LockDB(newMessages map[string][]*MessageRow, changedMessages m
 	for name := range changedMessages {
 		combined[name] = struct{}{}
 	}
+
+	// Build the list of manager objects (one per table).
 	var mms []*messageManager
 	// Don't do DBLock while holding lock on mu.
 	// It causes deadlocks.
@@ -148,6 +157,16 @@ func (me *Engine) LockDB(newMessages map[string][]*MessageRow, changedMessages m
 			}
 		}
 	}()
+	if len(mms) > 1 {
+		// Always use the same order in which manager objects are locked to avoid deadlocks.
+		// The previous order in "mms" is not guaranteed for multiple reasons:
+		// - We use a Go map above which does not guarantee an iteration order.
+		// - Transactions may not always use the same order when writing to multiple
+		//   messages tables.
+		sort.Slice(mms, func(i, j int) bool { return mms[i].name.String() < mms[j].name.String() })
+	}
+
+	// Lock each manager/messages table.
 	for _, mm := range mms {
 		mm.DBLock.Lock()
 	}
@@ -160,6 +179,11 @@ func (me *Engine) LockDB(newMessages map[string][]*MessageRow, changedMessages m
 
 // UpdateCaches updates the caches for the committed changes.
 func (me *Engine) UpdateCaches(newMessages map[string][]*MessageRow, changedMessages map[string][]string) {
+	// Short-circuit to avoid taking any locks if there's nothing to do.
+	if len(newMessages) == 0 && len(changedMessages) == 0 {
+		return
+	}
+
 	me.mu.Lock()
 	defer me.mu.Unlock()
 	now := time.Now().UnixNano()

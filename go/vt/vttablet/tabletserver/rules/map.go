@@ -21,8 +21,8 @@ import (
 	"errors"
 	"sync"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/planbuilder"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/planbuilder"
 )
 
 // Map is the maintainer of Rules from multiple sources

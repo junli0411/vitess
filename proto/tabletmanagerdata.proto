@@ -18,6 +18,7 @@ limitations under the License.
 // RPC calls to VtTablet for the management API.
 
 syntax = "proto3";
+option go_package = "vitess.io/vitess/go/vt/proto/tabletmanagerdata";
 
 package tabletmanagerdata;
 
@@ -90,12 +91,6 @@ message DbPermission {
 message Permissions {
   repeated UserPermission user_permissions = 1;
   repeated DbPermission db_permissions = 2;
-}
-
-// BlpPosition is a replication position for a given binlog player
-message BlpPosition {
-  uint32 uid = 1;
-  string position = 2;
 }
 
 //
@@ -218,6 +213,18 @@ message ApplySchemaResponse {
   SchemaDefinition after_schema = 2;
 }
 
+message LockTablesRequest {
+}
+
+message LockTablesResponse {
+}
+
+message UnlockTablesRequest {
+}
+
+message UnlockTablesResponse {
+}
+
 message ExecuteFetchAsDbaRequest {
   bytes query = 1;
   string db_name = 2;
@@ -285,6 +292,14 @@ message StartSlaveRequest {
 message StartSlaveResponse {
 }
 
+message StartSlaveUntilAfterRequest {
+  string position = 1;
+  int64 wait_timeout = 2;
+}
+
+message StartSlaveUntilAfterResponse {
+}
+
 message TabletExternallyReparentedRequest {
   // external_id is an string value that may be provided by an external
   // agent for tracking purposes. The tablet will emit this string in
@@ -308,40 +323,26 @@ message GetSlavesResponse {
   repeated string addrs = 1;
 }
 
-message WaitBlpPositionRequest {
-  BlpPosition blp_position = 1;
-  int64 wait_timeout = 2;
-}
-
-message WaitBlpPositionResponse {
-}
-
-message StopBlpRequest {
-}
-
-message StopBlpResponse {
-  repeated BlpPosition blp_positions = 1;
-}
-
-message StartBlpRequest {
-}
-
-message StartBlpResponse {
-}
-
-message RunBlpUntilRequest {
-  repeated BlpPosition blp_positions = 1;
-  int64 wait_timeout = 2;
-}
-
-message RunBlpUntilResponse {
-  string position = 1;
-}
-
 message ResetReplicationRequest {
 }
 
 message ResetReplicationResponse {
+}
+
+message VReplicationExecRequest {
+  string query = 1;
+}
+
+message VReplicationExecResponse {
+  query.QueryResult result = 1;
+}
+
+message VReplicationWaitForPosRequest {
+  int64 id = 1;
+  string position = 2;
+}
+
+message VReplicationWaitForPosResponse {
 }
 
 message InitMasterRequest {
@@ -375,6 +376,12 @@ message DemoteMasterRequest {
 
 message DemoteMasterResponse {
   string position = 1;
+}
+
+message UndoDemoteMasterRequest {
+}
+
+message UndoDemoteMasterResponse {
 }
 
 message PromoteSlaveWhenCaughtUpRequest {
@@ -426,6 +433,7 @@ message PromoteSlaveResponse {
 
 message BackupRequest {
   int64 concurrency = 1;
+  bool allowMaster = 2;
 }
 
 message BackupResponse {

@@ -28,12 +28,11 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
-
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/rules"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/rules"
 )
 
 var (
@@ -152,7 +151,7 @@ func (cr *topoCustomRule) oneWatch() error {
 		cancel()
 		for range wdChannel {
 		}
-		return topo.ErrInterrupted
+		return topo.NewError(topo.Interrupted, "watch")
 	}
 	cr.cancel = cancel
 	cr.mu.Unlock()

@@ -18,13 +18,13 @@ package planbuilder
 
 import (
 	"errors"
+	"fmt"
 
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vtgate/engine"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vtgate/engine"
 )
 
 var _ builder = (*subquery)(nil)
-var _ columnOriginator = (*subquery)(nil)
 
 // subquery is a builder that wraps a subquery.
 // This primitive wraps any subquery that results
@@ -37,18 +37,16 @@ var _ columnOriginator = (*subquery)(nil)
 // a subquery.
 type subquery struct {
 	order         int
-	symtab        *symtab
 	resultColumns []*resultColumn
-	bldr          builder
+	input         builder
 	esubquery     *engine.Subquery
 }
 
 // newSubquery builds a new subquery.
-func newSubquery(alias sqlparser.TableIdent, bldr builder, vschema VSchema) *subquery {
+func newSubquery(alias sqlparser.TableIdent, bldr builder) (*subquery, *symtab, error) {
 	sq := &subquery{
-		order:     bldr.MaxOrder() + 1,
-		bldr:      bldr,
-		symtab:    newSymtab(vschema),
+		order:     bldr.Order() + 1,
+		input:     bldr,
 		esubquery: &engine.Subquery{},
 	}
 
@@ -59,52 +57,38 @@ func newSubquery(alias sqlparser.TableIdent, bldr builder, vschema VSchema) *sub
 	}
 
 	// Create column symbols based on the result column names.
-	cols := make(map[string]*column)
-	for i, rc := range bldr.ResultColumns() {
-		cols[rc.alias.Lowered()] = &column{
-			origin: sq,
-			name:   rc.alias,
-			table:  t,
-			colnum: i,
+	for _, rc := range bldr.ResultColumns() {
+		if _, ok := t.columns[rc.alias.Lowered()]; ok {
+			return nil, nil, fmt.Errorf("duplicate column names in subquery: %s", sqlparser.String(rc.alias))
 		}
+		t.addColumn(rc.alias, &column{origin: sq})
 	}
-
-	// Populate the table with those columns and add it to symtab.
-	t.columns = cols
+	t.isAuthoritative = true
+	st := newSymtab()
 	// AddTable will not fail because symtab is empty.
-	_ = sq.symtab.AddTable(t)
-	return sq
+	_ = st.AddTable(t)
+	return sq, st, nil
 }
 
-// Symtab satisfies the builder interface.
-func (sq *subquery) Symtab() *symtab {
-	return sq.symtab.Resolve()
-}
-
-// Order returns the order of the subquery.
+// Order satisfies the builder interface.
 func (sq *subquery) Order() int {
 	return sq.order
 }
 
-// MaxOrder satisfies the builder interface.
-func (sq *subquery) MaxOrder() int {
-	return sq.order
-}
-
-// SetOrder satisfies the builder interface.
-func (sq *subquery) SetOrder(order int) {
-	sq.bldr.SetOrder(order)
-	sq.order = sq.bldr.MaxOrder() + 1
+// Reorder satisfies the builder interface.
+func (sq *subquery) Reorder(order int) {
+	sq.input.Reorder(order)
+	sq.order = sq.input.Order() + 1
 }
 
 // Primitive satisfies the builder interface.
 func (sq *subquery) Primitive() engine.Primitive {
-	sq.esubquery.Subquery = sq.bldr.Primitive()
+	sq.esubquery.Subquery = sq.input.Primitive()
 	return sq.esubquery
 }
 
-// Leftmost satisfies the builder interface.
-func (sq *subquery) Leftmost() columnOriginator {
+// First satisfies the builder interface.
+func (sq *subquery) First() builder {
 	return sq
 }
 
@@ -114,12 +98,12 @@ func (sq *subquery) ResultColumns() []*resultColumn {
 }
 
 // PushFilter satisfies the builder interface.
-func (sq *subquery) PushFilter(_ sqlparser.Expr, whereType string, _ columnOriginator) error {
+func (sq *subquery) PushFilter(_ *primitiveBuilder, _ sqlparser.Expr, whereType string, _ builder) error {
 	return errors.New("unsupported: filtering on results of cross-shard subquery")
 }
 
 // PushSelect satisfies the builder interface.
-func (sq *subquery) PushSelect(expr *sqlparser.AliasedExpr, _ columnOriginator) (rc *resultColumn, colnum int, err error) {
+func (sq *subquery) PushSelect(expr *sqlparser.AliasedExpr, _ builder) (rc *resultColumn, colnum int, err error) {
 	col, ok := expr.Expr.(*sqlparser.ColName)
 	if !ok {
 		return nil, 0, errors.New("unsupported: expression on results of a cross-shard subquery")
@@ -130,7 +114,7 @@ func (sq *subquery) PushSelect(expr *sqlparser.AliasedExpr, _ columnOriginator) 
 	sq.esubquery.Cols = append(sq.esubquery.Cols, inner)
 
 	// Build a new column reference to represent the result column.
-	rc = sq.Symtab().NewResultColumn(expr, sq)
+	rc = newResultColumn(expr, sq)
 	sq.resultColumns = append(sq.resultColumns, rc)
 
 	return rc, len(sq.resultColumns) - 1, nil
@@ -159,12 +143,12 @@ func (sq *subquery) PushMisc(sel *sqlparser.Select) {
 
 // Wireup satisfies the builder interface.
 func (sq *subquery) Wireup(bldr builder, jt *jointab) error {
-	return sq.bldr.Wireup(bldr, jt)
+	return sq.input.Wireup(bldr, jt)
 }
 
 // SupplyVar satisfies the builder interface.
 func (sq *subquery) SupplyVar(from, to int, col *sqlparser.ColName, varname string) {
-	sq.bldr.SupplyVar(from, to, col, varname)
+	sq.input.SupplyVar(from, to, col, varname)
 }
 
 // SupplyCol satisfies the builder interface.

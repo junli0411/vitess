@@ -26,24 +26,26 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/exit"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/discovery"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/mysqlctl"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/srvtopo"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/topotools"
+	"vitess.io/vitess/go/vt/vtcombo"
+	"vitess.io/vitess/go/vt/vtctld"
+	"vitess.io/vitess/go/vt/vtgate"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	"github.com/youtube/vitess/go/exit"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/discovery"
-	"github.com/youtube/vitess/go/vt/mysqlctl"
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/srvtopo"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
-	"github.com/youtube/vitess/go/vt/vtctld"
-	"github.com/youtube/vitess/go/vt/vtgate"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
-
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vttestpb "github.com/youtube/vitess/go/vt/proto/vttest"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vttestpb "vitess.io/vitess/go/vt/proto/vttest"
 )
 
 var (
@@ -62,9 +64,7 @@ func main() {
 	defer exit.Recover()
 
 	// flag parsing
-	dbconfigFlags := dbconfigs.AppConfig | dbconfigs.AllPrivsConfig | dbconfigs.DbaConfig |
-		dbconfigs.FilteredConfig | dbconfigs.ReplConfig
-	dbconfigs.RegisterFlags(dbconfigFlags)
+	dbconfigs.RegisterFlags(dbconfigs.All...)
 	mysqlctl.RegisterFlags()
 	servenv.ParseFlags("vtcombo")
 
@@ -95,23 +95,26 @@ func main() {
 	servenv.Init()
 	tabletenv.Init()
 
-	// database configs
-	mycnf, err := mysqlctl.NewMycnfFromFlags(0)
-	if err != nil {
-		log.Errorf("mycnf read failed: %v", err)
-		exit.Return(1)
-	}
-	dbcfgs, err := dbconfigs.Init(mycnf.SocketFile, dbconfigFlags)
+	dbcfgs, err := dbconfigs.Init("")
 	if err != nil {
 		log.Warning(err)
 	}
-	mysqld := mysqlctl.NewMysqld(mycnf, dbcfgs, dbconfigFlags)
+	mysqld := mysqlctl.NewMysqld(dbcfgs)
 	servenv.OnClose(mysqld.Close)
 
-	// tablets configuration and init
-	if err := initTabletMap(ts, tpb, mysqld, *dbcfgs, *schemaDir, mycnf); err != nil {
+	// tablets configuration and init.
+	// Send mycnf as nil because vtcombo won't do backups and restores.
+	if err := vtcombo.InitTabletMap(ts, tpb, mysqld, dbcfgs, *schemaDir, nil); err != nil {
 		log.Errorf("initTabletMapProto failed: %v", err)
 		exit.Return(1)
+	}
+
+	// Now that we have fully initialized the tablets, rebuild the keyspace graph. This is what would normally happen in InitTablet.
+	for _, ks := range tpb.Keyspaces {
+		err := topotools.RebuildKeyspace(context.Background(), logutil.NewConsoleLogger(), ts, ks.GetName(), tpb.Cells)
+		if err != nil {
+			log.Fatalf("Couldn't build srv keyspace for (%v: %v). Got error: %v", ks, tpb.Cells, err)
+		}
 	}
 
 	// vtgate configuration and init
@@ -126,7 +129,7 @@ func main() {
 	vtgate.QueryLogHandler = "/debug/vtgate/querylog"
 	vtgate.QueryLogzHandler = "/debug/vtgate/querylogz"
 	vtgate.QueryzHandler = "/debug/vtgate/queryz"
-	vtgate.Init(context.Background(), healthCheck, ts, resilientServer, tpb.Cells[0], 2 /*retryCount*/, tabletTypesToWait)
+	vtgate.Init(context.Background(), healthCheck, resilientServer, tpb.Cells[0], 2 /*retryCount*/, tabletTypesToWait)
 
 	// vtctld configuration and init
 	vtctld.InitVtctld(ts)

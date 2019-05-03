@@ -23,9 +23,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/youtube/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/logutil"
 
-	logutilpb "github.com/youtube/vitess/go/vt/proto/logutil"
+	logutilpb "vitess.io/vitess/go/vt/proto/logutil"
 )
 
 // FakeLoggerEventStreamingClient is the base for the fakes for the vtctlclient and vtworkerclient.
@@ -83,7 +83,7 @@ func (f *FakeLoggerEventStreamingClient) RegisterResultForAddr(addr string, args
 			result.count++
 			return nil
 		}
-		return fmt.Errorf("A different result (%v) is already registered for command: %v", result, args)
+		return fmt.Errorf("a different result (%v) is already registered for command: %v", result, args)
 	}
 	f.results[k] = &v
 	return nil

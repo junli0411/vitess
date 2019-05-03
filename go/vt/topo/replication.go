@@ -17,18 +17,18 @@ limitations under the License.
 package topo
 
 import (
-	"fmt"
 	"path"
 
-	log "github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	"github.com/youtube/vitess/go/trace"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/trace"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/topo/topoproto"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // ShardReplicationInfo is the companion structure for ShardReplication.
@@ -72,14 +72,13 @@ func (sri *ShardReplicationInfo) GetShardReplicationNode(tabletAlias *topodatapb
 			return rl, nil
 		}
 	}
-	return nil, ErrNoNode
+	return nil, NewError(NoNode, tabletAlias.String())
 }
 
 // UpdateShardReplicationRecord is a low level function to add / update an
 // entry to the ShardReplication object.
 func UpdateShardReplicationRecord(ctx context.Context, ts *Server, keyspace, shard string, tabletAlias *topodatapb.TabletAlias) error {
-	span := trace.NewSpanFromContext(ctx)
-	span.StartClient("TopoServer.UpdateShardReplicationFields")
+	span, ctx := trace.NewSpan(ctx, "TopoServer.UpdateShardReplicationFields")
 	span.Annotate("keyspace", keyspace)
 	span.Annotate("shard", shard)
 	span.Annotate("tablet", topoproto.TabletAliasString(tabletAlias))
@@ -107,7 +106,7 @@ func UpdateShardReplicationRecord(ctx context.Context, ts *Server, keyspace, sha
 			modified = true
 		}
 		if !modified {
-			return ErrNoUpdateNeeded
+			return NewError(NoUpdateNeeded, tabletAlias.String())
 		}
 		sr.Nodes = nodes
 		return nil
@@ -140,7 +139,7 @@ func FixShardReplication(ctx context.Context, ts *Server, logger logutil.Logger,
 
 	for _, node := range sri.Nodes {
 		ti, err := ts.GetTablet(ctx, node.TabletAlias)
-		if err == ErrNoNode {
+		if IsErrType(err, NoNode) {
 			logger.Warningf("Tablet %v is in the replication graph, but does not exist, removing it", node.TabletAlias)
 			return RemoveShardReplicationRecord(ctx, ts, cell, keyspace, shard, node.TabletAlias)
 		}
@@ -173,23 +172,23 @@ func (ts *Server) UpdateShardReplicationFields(ctx context.Context, cell, keyspa
 	for {
 		data, version, err := conn.Get(ctx, nodePath)
 		sr := &topodatapb.ShardReplication{}
-		switch err {
-		case ErrNoNode:
+		switch {
+		case IsErrType(err, NoNode):
 			// Empty node, version is nil
-		case nil:
+		case err == nil:
 			// Use any data we got.
 			if err = proto.Unmarshal(data, sr); err != nil {
-				return fmt.Errorf("bad ShardReplication data %v", err)
+				return vterrors.Wrap(err, "bad ShardReplication data")
 			}
 		default:
 			return err
 		}
 
 		err = update(sr)
-		switch err {
-		case ErrNoUpdateNeeded:
+		switch {
+		case IsErrType(err, NoUpdateNeeded):
 			return nil
-		case nil:
+		case err == nil:
 			// keep going
 		default:
 			return err
@@ -201,9 +200,9 @@ func (ts *Server) UpdateShardReplicationFields(ctx context.Context, cell, keyspa
 			return err
 		}
 		if version == nil {
-			// We have to create, and we catch ErrNodeExists.
+			// We have to create, and we catch NodeExists.
 			_, err = conn.Create(ctx, nodePath, data)
-			if err == ErrNodeExists {
+			if IsErrType(err, NodeExists) {
 				// Node was created by another process, try
 				// again.
 				continue
@@ -213,7 +212,7 @@ func (ts *Server) UpdateShardReplicationFields(ctx context.Context, cell, keyspa
 
 		// We have to update, and we catch ErrBadVersion.
 		_, err = conn.Update(ctx, nodePath, data, version)
-		if err == ErrBadVersion {
+		if IsErrType(err, BadVersion) {
 			// Node was updated by another process, try again.
 			continue
 		}
@@ -236,7 +235,7 @@ func (ts *Server) GetShardReplication(ctx context.Context, cell, keyspace, shard
 
 	sr := &topodatapb.ShardReplication{}
 	if err = proto.Unmarshal(data, sr); err != nil {
-		return nil, fmt.Errorf("bad ShardReplication data %v", err)
+		return nil, vterrors.Wrap(err, "bad ShardReplication data")
 	}
 
 	return NewShardReplicationInfo(sr, cell, keyspace, shard), nil

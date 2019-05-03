@@ -17,24 +17,19 @@ limitations under the License.
 package planbuilder
 
 import (
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
-
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 func analyzeUpdate(upd *sqlparser.Update, tables map[string]*schema.Table) (plan *Plan, err error) {
 	plan = &Plan{
 		PlanID:    PlanPassDML,
 		FullQuery: GenerateFullQuery(upd),
-	}
-
-	if PassthroughDMLs {
-		return plan, nil
 	}
 
 	if len(upd.TableExprs) > 1 {
@@ -53,9 +48,16 @@ func analyzeUpdate(upd *sqlparser.Update, tables map[string]*schema.Table) (plan
 		plan.Reason = ReasonTable
 		return plan, nil
 	}
-	table, err := plan.setTable(tableName, tables)
-	if err != nil {
-		return nil, err
+	table, tableErr := plan.setTable(tableName, tables)
+
+	// In passthrough dml mode, allow the operation even if the
+	// table is unknown in the schema.
+	if PassthroughDMLs {
+		return plan, nil
+	}
+
+	if tableErr != nil {
+		return nil, tableErr
 	}
 
 	// Store the WHERE clause as string for the hot row protection (txserializer).
@@ -100,10 +102,6 @@ func analyzeDelete(del *sqlparser.Delete, tables map[string]*schema.Table) (plan
 		FullQuery: GenerateFullQuery(del),
 	}
 
-	if PassthroughDMLs {
-		return plan, nil
-	}
-
 	if len(del.TableExprs) > 1 {
 		plan.Reason = ReasonMultiTable
 		return plan, nil
@@ -118,9 +116,16 @@ func analyzeDelete(del *sqlparser.Delete, tables map[string]*schema.Table) (plan
 		plan.Reason = ReasonTable
 		return plan, nil
 	}
-	table, err := plan.setTable(tableName, tables)
-	if err != nil {
-		return nil, err
+	table, tableErr := plan.setTable(tableName, tables)
+
+	// In passthrough dml mode, allow the operation even if the
+	// table is unknown in the schema.
+	if PassthroughDMLs {
+		return plan, nil
+	}
+
+	if tableErr != nil {
+		return nil, tableErr
 	}
 
 	// Store the WHERE clause as string for the hot row protection (txserializer).
@@ -197,6 +202,14 @@ func analyzeSelect(sel *sqlparser.Select, tables map[string]*schema.Table) (plan
 		return nil, err
 	}
 
+	if sel.Where != nil {
+		comp, ok := sel.Where.Expr.(*sqlparser.ComparisonExpr)
+		if ok && comp.IsImpossible() {
+			plan.PlanID = PlanSelectImpossible
+			return plan, nil
+		}
+	}
+
 	// Check if it's a NEXT VALUE statement.
 	if nextVal, ok := sel.SelectExprs[0].(sqlparser.Nextval); ok {
 		if table.Type != schema.Sequence {
@@ -249,10 +262,7 @@ func analyzeBoolean(node sqlparser.Expr) (conditions []*sqlparser.ComparisonExpr
 		return analyzeBoolean(node.Expr)
 	case *sqlparser.ComparisonExpr:
 		switch {
-		case sqlparser.StringIn(
-			node.Operator,
-			sqlparser.EqualStr,
-			sqlparser.LikeStr):
+		case node.Operator == sqlparser.EqualStr:
 			if sqlparser.IsColName(node.Left) && sqlparser.IsValue(node.Right) {
 				return []*sqlparser.ComparisonExpr{node}
 			}
@@ -301,9 +311,6 @@ func analyzeInsert(ins *sqlparser.Insert, tables map[string]*schema.Table) (plan
 		PlanID:    PlanPassDML,
 		FullQuery: GenerateFullQuery(ins),
 	}
-	if PassthroughDMLs {
-		return plan, nil
-	}
 
 	if ins.Action == sqlparser.ReplaceStr {
 		plan.Reason = ReasonReplace
@@ -314,9 +321,20 @@ func analyzeInsert(ins *sqlparser.Insert, tables map[string]*schema.Table) (plan
 		plan.Reason = ReasonTable
 		return plan, nil
 	}
-	table, err := plan.setTable(tableName, tables)
-	if err != nil {
-		return nil, err
+	table, tableErr := plan.setTable(tableName, tables)
+
+	switch {
+	case tableErr == nil && table.Type == schema.Message:
+		// message inserts need to continue being strict, even in passthrough dml mode,
+		// because field defaults are set here
+
+	case PassthroughDMLs:
+		// In passthrough dml mode, allow the operation even if the
+		// table is unknown in the schema.
+		return plan, nil
+
+	case tableErr != nil:
+		return nil, tableErr
 	}
 
 	if !table.HasPrimary() {
@@ -433,7 +451,13 @@ func analyzeInsertNoType(ins *sqlparser.Insert, plan *Plan, table *schema.Table)
 	var formatErr error
 	plan.UpsertQuery = GenerateUpdateOuterQuery(upd, tableAlias, func(buf *sqlparser.TrackedBuffer, node sqlparser.SQLNode) {
 		if node, ok := node.(*sqlparser.ValuesFuncExpr); ok {
-			colnum := ins.Columns.FindColumn(node.Name)
+			if !node.Name.Qualifier.IsEmpty() && node.Name.Qualifier != ins.Table {
+				formatErr = vterrors.Errorf(vtrpcpb.Code_NOT_FOUND,
+					"could not find qualified column %v in table %v",
+					sqlparser.String(node.Name), sqlparser.String(ins.Table))
+				return
+			}
+			colnum := ins.Columns.FindColumn(node.Name.Name)
 			if colnum == -1 {
 				formatErr = vterrors.Errorf(vtrpcpb.Code_NOT_FOUND, "could not find column %v", node.Name)
 				return
@@ -454,7 +478,14 @@ func analyzeInsertMessage(ins *sqlparser.Insert, plan *Plan, table *schema.Table
 		return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "subquery not allowed for message table: %s", table.Name.String())
 	}
 	if ins.OnDup != nil {
-		return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "'on duplicate key' construct not allowed for message table: %s", table.Name.String())
+		// only allow 'on duplicate key' where time_scheduled and id are not referenced
+		ts := sqlparser.NewColIdent("time_scheduled")
+		id := sqlparser.NewColIdent("id")
+		for _, updateExpr := range ins.OnDup {
+			if updateExpr.Name.Name.Equal(ts) || updateExpr.Name.Name.Equal(id) {
+				return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "'on duplicate key' cannot reference time_scheduled or id for message table: %s", table.Name.String())
+			}
+		}
 	}
 	if len(ins.Columns) == 0 {
 		return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "column list must be specified for message table insert: %s", table.Name.String())
@@ -589,7 +620,10 @@ func analyzeOnDupExpressions(ins *sqlparser.Insert, pkIndex *schema.Index) (pkVa
 			pkValues = make([]sqltypes.PlanValue, len(pkIndex.Columns))
 		}
 		if vf, ok := expr.Expr.(*sqlparser.ValuesFuncExpr); ok {
-			insertCol := ins.Columns.FindColumn(vf.Name)
+			if !vf.Name.Qualifier.IsEmpty() && vf.Name.Qualifier != ins.Table {
+				return nil, false
+			}
+			insertCol := ins.Columns.FindColumn(vf.Name.Name)
 			if insertCol == -1 {
 				return nil, false
 			}

@@ -17,20 +17,56 @@ limitations under the License.
 package sqlparser
 
 import (
-	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"strings"
+	"sync"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/vterrors"
-
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
+
+// parserPool is a pool for parser objects.
+var parserPool = sync.Pool{}
+
+// zeroParser is a zero-initialized parser to help reinitialize the parser for pooling.
+var zeroParser = *(yyNewParser().(*yyParserImpl))
+
+// yyParsePooled is a wrapper around yyParse that pools the parser objects. There isn't a
+// particularly good reason to use yyParse directly, since it immediately discards its parser.  What
+// would be ideal down the line is to actually pool the stacks themselves rather than the parser
+// objects, as per https://github.com/cznic/goyacc/blob/master/main.go. However, absent an upstream
+// change to goyacc, this is the next best option.
+//
+// N.B: Parser pooling means that you CANNOT take references directly to parse stack variables (e.g.
+// $$ = &$4) in sql.y rules. You must instead add an intermediate reference like so:
+//    showCollationFilterOpt := $4
+//    $$ = &Show{Type: string($2), ShowCollationFilterOpt: &showCollationFilterOpt}
+func yyParsePooled(yylex yyLexer) int {
+	// Being very particular about using the base type and not an interface type b/c we depend on
+	// the implementation to know how to reinitialize the parser.
+	var parser *yyParserImpl
+
+	i := parserPool.Get()
+	if i != nil {
+		parser = i.(*yyParserImpl)
+	} else {
+		parser = yyNewParser().(*yyParserImpl)
+	}
+
+	defer func() {
+		*parser = zeroParser
+		parserPool.Put(parser)
+	}()
+	return parser.Parse(yylex)
+}
 
 // Instructions for creating new types: If a type
 // needs to satisfy an interface, declare that function
@@ -50,13 +86,19 @@ import (
 // error is ignored and the DDL is returned anyway.
 func Parse(sql string) (Statement, error) {
 	tokenizer := NewStringTokenizer(sql)
-	if yyParse(tokenizer) != 0 {
+	if yyParsePooled(tokenizer) != 0 {
 		if tokenizer.partialDDL != nil {
+			if typ, val := tokenizer.Scan(); typ != 0 {
+				return nil, fmt.Errorf("extra characters encountered after end of DDL: '%s'", string(val))
+			}
 			log.Warningf("ignoring error parsing DDL '%s': %v", sql, tokenizer.LastError)
 			tokenizer.ParseTree = tokenizer.partialDDL
 			return tokenizer.ParseTree, nil
 		}
 		return nil, vterrors.New(vtrpcpb.Code_INVALID_ARGUMENT, tokenizer.LastError.Error())
+	}
+	if tokenizer.ParseTree == nil {
+		return nil, ErrEmpty
 	}
 	return tokenizer.ParseTree, nil
 }
@@ -65,10 +107,19 @@ func Parse(sql string) (Statement, error) {
 // partially parsed DDL statements.
 func ParseStrictDDL(sql string) (Statement, error) {
 	tokenizer := NewStringTokenizer(sql)
-	if yyParse(tokenizer) != 0 {
+	if yyParsePooled(tokenizer) != 0 {
 		return nil, tokenizer.LastError
 	}
+	if tokenizer.ParseTree == nil {
+		return nil, ErrEmpty
+	}
 	return tokenizer.ParseTree, nil
+}
+
+// ParseTokenizer is a raw interface to parse from the given tokenizer.
+// This does not used pooled parsers, and should not be used in general.
+func ParseTokenizer(tokenizer *Tokenizer) int {
+	return yyParse(tokenizer)
 }
 
 // ParseNext parses a single SQL statement from the tokenizer
@@ -77,6 +128,16 @@ func ParseStrictDDL(sql string) (Statement, error) {
 // the next call to ParseNext to parse any subsequent SQL statements. When
 // there are no more statements to parse, a error of io.EOF is returned.
 func ParseNext(tokenizer *Tokenizer) (Statement, error) {
+	return parseNext(tokenizer, false)
+}
+
+// ParseNextStrictDDL is the same as ParseNext except it errors on
+// partially parsed DDL statements.
+func ParseNextStrictDDL(tokenizer *Tokenizer) (Statement, error) {
+	return parseNext(tokenizer, true)
+}
+
+func parseNext(tokenizer *Tokenizer, strict bool) (Statement, error) {
 	if tokenizer.lastChar == ';' {
 		tokenizer.next()
 		tokenizer.skipBlank()
@@ -87,15 +148,21 @@ func ParseNext(tokenizer *Tokenizer) (Statement, error) {
 
 	tokenizer.reset()
 	tokenizer.multi = true
-	if yyParse(tokenizer) != 0 {
-		if tokenizer.partialDDL != nil {
+	if yyParsePooled(tokenizer) != 0 {
+		if tokenizer.partialDDL != nil && !strict {
 			tokenizer.ParseTree = tokenizer.partialDDL
 			return tokenizer.ParseTree, nil
 		}
 		return nil, tokenizer.LastError
 	}
+	if tokenizer.ParseTree == nil {
+		return ParseNext(tokenizer)
+	}
 	return tokenizer.ParseTree, nil
 }
+
+// ErrEmpty is a sentinel error returned when parsing empty statements.
+var ErrEmpty = errors.New("empty statement")
 
 // SplitStatement returns the first sql statement up to either a ; or EOF
 // and the remainder from the given buffer
@@ -117,14 +184,45 @@ func SplitStatement(blob string) (string, string, error) {
 	return blob, "", nil
 }
 
+// SplitStatementToPieces split raw sql statement that may have multi sql pieces to sql pieces
+// returns the sql pieces blob contains; or error if sql cannot be parsed
+func SplitStatementToPieces(blob string) (pieces []string, err error) {
+	pieces = make([]string, 0, 16)
+	tokenizer := NewStringTokenizer(blob)
+
+	tkn := 0
+	var stmt string
+	stmtBegin := 0
+	for {
+		tkn, _ = tokenizer.Scan()
+		if tkn == ';' {
+			stmt = blob[stmtBegin : tokenizer.Position-2]
+			pieces = append(pieces, stmt)
+			stmtBegin = tokenizer.Position - 1
+
+		} else if tkn == 0 || tkn == eofChar {
+			blobTail := tokenizer.Position - 2
+
+			if stmtBegin < blobTail {
+				stmt = blob[stmtBegin : blobTail+1]
+				pieces = append(pieces, stmt)
+			}
+			break
+		}
+	}
+
+	err = tokenizer.LastError
+	return
+}
+
 // SQLNode defines the interface for all nodes
 // generated by the parser.
 type SQLNode interface {
 	Format(buf *TrackedBuffer)
-	// WalkSubtree calls visit on all underlying nodes
+	// walkSubtree calls visit on all underlying nodes
 	// of the subtree, but not the current one. Walking
 	// must be interrupted if visit returns an error.
-	WalkSubtree(visit Visit) error
+	walkSubtree(visit Visit) error
 }
 
 // Visit defines the signature of a function that
@@ -145,7 +243,7 @@ func Walk(visit Visit, nodes ...SQLNode) error {
 			return err
 		}
 		if kontinue {
-			err = node.WalkSubtree(visit)
+			err = node.walkSubtree(visit)
 			if err != nil {
 				return err
 			}
@@ -166,9 +264,9 @@ func String(node SQLNode) string {
 }
 
 // Append appends the SQLNode to the buffer.
-func Append(buf *bytes.Buffer, node SQLNode) {
+func Append(buf *strings.Builder, node SQLNode) {
 	tbuf := &TrackedBuffer{
-		Buffer: buf,
+		Builder: buf,
 	}
 	node.Format(tbuf)
 }
@@ -186,6 +284,7 @@ func (*Insert) iStatement()     {}
 func (*Update) iStatement()     {}
 func (*Delete) iStatement()     {}
 func (*Set) iStatement()        {}
+func (*DBDDL) iStatement()      {}
 func (*DDL) iStatement()        {}
 func (*Show) iStatement()       {}
 func (*Use) iStatement()        {}
@@ -267,8 +366,7 @@ func (node *Select) Format(buf *TrackedBuffer) {
 		node.Limit, node.Lock)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Select) WalkSubtree(visit Visit) error {
+func (node *Select) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -305,7 +403,6 @@ func (node *Select) AddWhere(expr Expr) {
 		Left:  node.Where.Expr,
 		Right: expr,
 	}
-	return
 }
 
 // AddHaving adds the boolean expression to the
@@ -328,7 +425,6 @@ func (node *Select) AddHaving(expr Expr) {
 		Left:  node.Having.Expr,
 		Right: expr,
 	}
-	return
 }
 
 // ParenSelect is a parenthesized SELECT statement.
@@ -351,8 +447,7 @@ func (node *ParenSelect) Format(buf *TrackedBuffer) {
 	buf.Myprintf("(%v)", node.Select)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *ParenSelect) WalkSubtree(visit Visit) error {
+func (node *ParenSelect) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -394,8 +489,7 @@ func (node *Union) Format(buf *TrackedBuffer) {
 		node.OrderBy, node.Limit, node.Lock)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Union) WalkSubtree(visit Visit) error {
+func (node *Union) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -419,8 +513,7 @@ func (node *Stream) Format(buf *TrackedBuffer) {
 		node.Comments, node.SelectExpr, node.Table)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Stream) WalkSubtree(visit Visit) error {
+func (node *Stream) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -439,7 +532,7 @@ func (node *Stream) WalkSubtree(visit Visit) error {
 // the row and re-inserts with new values. For that reason we keep it as an Insert struct.
 // Replaces are currently disallowed in sharded schemas because
 // of the implications the deletion part may have on vindexes.
-// If you add fields here, consider adding them to calls to validateSubquerySamePlan.
+// If you add fields here, consider adding them to calls to validateUnshardedRoute.
 type Insert struct {
 	Action     string
 	Comments   Comments
@@ -465,8 +558,7 @@ func (node *Insert) Format(buf *TrackedBuffer) {
 		node.Table, node.Partitions, node.Columns, node.Rows, node.OnDup)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Insert) WalkSubtree(visit Visit) error {
+func (node *Insert) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -492,9 +584,10 @@ func (Values) iInsertRows()       {}
 func (*ParenSelect) iInsertRows() {}
 
 // Update represents an UPDATE statement.
-// If you add fields here, consider adding them to calls to validateSubquerySamePlan.
+// If you add fields here, consider adding them to calls to validateUnshardedRoute.
 type Update struct {
 	Comments   Comments
+	Ignore     string
 	TableExprs TableExprs
 	Exprs      UpdateExprs
 	Where      *Where
@@ -504,13 +597,12 @@ type Update struct {
 
 // Format formats the node.
 func (node *Update) Format(buf *TrackedBuffer) {
-	buf.Myprintf("update %v%v set %v%v%v%v",
-		node.Comments, node.TableExprs,
+	buf.Myprintf("update %v%s%v set %v%v%v%v",
+		node.Comments, node.Ignore, node.TableExprs,
 		node.Exprs, node.Where, node.OrderBy, node.Limit)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Update) WalkSubtree(visit Visit) error {
+func (node *Update) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -526,7 +618,7 @@ func (node *Update) WalkSubtree(visit Visit) error {
 }
 
 // Delete represents a DELETE statement.
-// If you add fields here, consider adding them to calls to validateSubquerySamePlan.
+// If you add fields here, consider adding them to calls to validateUnshardedRoute.
 type Delete struct {
 	Comments   Comments
 	Targets    TableNames
@@ -546,8 +638,7 @@ func (node *Delete) Format(buf *TrackedBuffer) {
 	buf.Myprintf("from %v%v%v%v%v", node.TableExprs, node.Partitions, node.Where, node.OrderBy, node.Limit)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Delete) WalkSubtree(visit Visit) error {
+func (node *Delete) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -565,15 +656,15 @@ func (node *Delete) WalkSubtree(visit Visit) error {
 // Set represents a SET statement.
 type Set struct {
 	Comments Comments
-	Exprs    UpdateExprs
-	Charset  ColIdent
+	Exprs    SetExprs
 	Scope    string
 }
 
 // Set.Scope or Show.Scope
 const (
-	SessionStr = "session"
-	GlobalStr  = "global"
+	SessionStr  = "session"
+	GlobalStr   = "global"
+	ImplicitStr = ""
 )
 
 // Format formats the node.
@@ -585,8 +676,7 @@ func (node *Set) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Set) WalkSubtree(visit Visit) error {
+func (node *Set) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -597,71 +687,181 @@ func (node *Set) WalkSubtree(visit Visit) error {
 	)
 }
 
-// DDL represents a CREATE, ALTER, DROP, RENAME or TRUNCATE statement.
-// Table is set for AlterStr, DropStr, RenameStr, TruncateStr
-// NewName is set for AlterStr, CreateStr, RenameStr.
+// DBDDL represents a CREATE, DROP database statement.
+type DBDDL struct {
+	Action   string
+	DBName   string
+	IfExists bool
+	Collate  string
+	Charset  string
+}
+
+// Format formats the node.
+func (node *DBDDL) Format(buf *TrackedBuffer) {
+	switch node.Action {
+	case CreateStr:
+		buf.WriteString(fmt.Sprintf("%s database %s", node.Action, node.DBName))
+	case DropStr:
+		exists := ""
+		if node.IfExists {
+			exists = " if exists"
+		}
+		buf.WriteString(fmt.Sprintf("%s database%s %v", node.Action, exists, node.DBName))
+	}
+}
+
+// walkSubtree walks the nodes of the subtree.
+func (node *DBDDL) walkSubtree(visit Visit) error {
+	return nil
+}
+
+// DDL represents a CREATE, ALTER, DROP, RENAME, TRUNCATE or ANALYZE statement.
 type DDL struct {
-	Action        string
-	Table         TableName
-	NewName       TableName
+	Action string
+
+	// FromTables is set if Action is RenameStr or DropStr.
+	FromTables TableNames
+
+	// ToTables is set if Action is RenameStr.
+	ToTables TableNames
+
+	// Table is set if Action is other than RenameStr or DropStr.
+	Table TableName
+
+	// The following fields are set if a DDL was fully analyzed.
 	IfExists      bool
 	TableSpec     *TableSpec
+	OptLike       *OptLike
 	PartitionSpec *PartitionSpec
+
+	// VindexSpec is set for CreateVindexStr, DropVindexStr, AddColVindexStr, DropColVindexStr.
+	VindexSpec *VindexSpec
+
+	// VindexCols is set for AddColVindexStr.
+	VindexCols []ColIdent
 }
 
 // DDL strings.
 const (
-	CreateStr   = "create"
-	AlterStr    = "alter"
-	DropStr     = "drop"
-	RenameStr   = "rename"
-	TruncateStr = "truncate"
+	CreateStr           = "create"
+	AlterStr            = "alter"
+	DropStr             = "drop"
+	RenameStr           = "rename"
+	TruncateStr         = "truncate"
+	FlushStr            = "flush"
+	CreateVindexStr     = "create vindex"
+	DropVindexStr       = "drop vindex"
+	AddVschemaTableStr  = "add vschema table"
+	DropVschemaTableStr = "drop vschema table"
+	AddColVindexStr     = "on table add vindex"
+	DropColVindexStr    = "on table drop vindex"
+
+	// Vindex DDL param to specify the owner of a vindex
+	VindexOwnerStr = "owner"
 )
 
 // Format formats the node.
 func (node *DDL) Format(buf *TrackedBuffer) {
 	switch node.Action {
 	case CreateStr:
-		if node.TableSpec == nil {
-			buf.Myprintf("%s table %v", node.Action, node.NewName)
+		if node.OptLike != nil {
+			buf.Myprintf("%s table %v %v", node.Action, node.Table, node.OptLike)
+		} else if node.TableSpec != nil {
+			buf.Myprintf("%s table %v %v", node.Action, node.Table, node.TableSpec)
 		} else {
-			buf.Myprintf("%s table %v %v", node.Action, node.NewName, node.TableSpec)
+			buf.Myprintf("%s table %v", node.Action, node.Table)
 		}
 	case DropStr:
 		exists := ""
 		if node.IfExists {
 			exists = " if exists"
 		}
-		buf.Myprintf("%s table%s %v", node.Action, exists, node.Table)
+		buf.Myprintf("%s table%s %v", node.Action, exists, node.FromTables)
 	case RenameStr:
-		buf.Myprintf("%s table %v %v", node.Action, node.Table, node.NewName)
+		buf.Myprintf("%s table %v to %v", node.Action, node.FromTables[0], node.ToTables[0])
+		for i := 1; i < len(node.FromTables); i++ {
+			buf.Myprintf(", %v to %v", node.FromTables[i], node.ToTables[i])
+		}
 	case AlterStr:
 		if node.PartitionSpec != nil {
 			buf.Myprintf("%s table %v %v", node.Action, node.Table, node.PartitionSpec)
 		} else {
 			buf.Myprintf("%s table %v", node.Action, node.Table)
 		}
+	case FlushStr:
+		buf.Myprintf("%s", node.Action)
+	case CreateVindexStr:
+		buf.Myprintf("alter vschema create vindex %v %v", node.VindexSpec.Name, node.VindexSpec)
+	case DropVindexStr:
+		buf.Myprintf("alter vschema drop vindex %v", node.VindexSpec.Name)
+	case AddVschemaTableStr:
+		buf.Myprintf("alter vschema add table %v", node.Table)
+	case DropVschemaTableStr:
+		buf.Myprintf("alter vschema drop table %v", node.Table)
+	case AddColVindexStr:
+		buf.Myprintf("alter vschema on %v add vindex %v (", node.Table, node.VindexSpec.Name)
+		for i, col := range node.VindexCols {
+			if i != 0 {
+				buf.Myprintf(", %v", col)
+			} else {
+				buf.Myprintf("%v", col)
+			}
+		}
+		buf.Myprintf(")")
+		if node.VindexSpec.Type.String() != "" {
+			buf.Myprintf(" %v", node.VindexSpec)
+		}
+	case DropColVindexStr:
+		buf.Myprintf("alter vschema on %v drop vindex %v", node.Table, node.VindexSpec.Name)
 	default:
 		buf.Myprintf("%s table %v", node.Action, node.Table)
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *DDL) WalkSubtree(visit Visit) error {
+func (node *DDL) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
-	return Walk(
-		visit,
-		node.Table,
-		node.NewName,
-	)
+	for _, t := range node.AffectedTables() {
+		if err := Walk(visit, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AffectedTables returns the list table names affected by the DDL.
+func (node *DDL) AffectedTables() TableNames {
+	if node.Action == RenameStr || node.Action == DropStr {
+		list := make(TableNames, 0, len(node.FromTables)+len(node.ToTables))
+		list = append(list, node.FromTables...)
+		list = append(list, node.ToTables...)
+		return list
+	}
+	return TableNames{node.Table}
 }
 
 // Partition strings
 const (
 	ReorganizeStr = "reorganize partition"
 )
+
+// OptLike works for create table xxx like xxx
+type OptLike struct {
+	LikeTable TableName
+}
+
+// Format formats the node.
+func (node *OptLike) Format(buf *TrackedBuffer) {
+	buf.Myprintf("like %v", node.LikeTable)
+}
+
+func (node *OptLike) walkSubtree(visit Visit) error {
+	if node == nil {
+		return nil
+	}
+	return Walk(visit, node.LikeTable)
+}
 
 // PartitionSpec describe partition actions (for alter and create)
 type PartitionSpec struct {
@@ -686,8 +886,7 @@ func (node *PartitionSpec) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *PartitionSpec) WalkSubtree(visit Visit) error {
+func (node *PartitionSpec) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -718,8 +917,7 @@ func (node *PartitionDefinition) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *PartitionDefinition) WalkSubtree(visit Visit) error {
+func (node *PartitionDefinition) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -732,9 +930,10 @@ func (node *PartitionDefinition) WalkSubtree(visit Visit) error {
 
 // TableSpec describes the structure of a table from a CREATE TABLE statement
 type TableSpec struct {
-	Columns []*ColumnDefinition
-	Indexes []*IndexDefinition
-	Options string
+	Columns     []*ColumnDefinition
+	Indexes     []*IndexDefinition
+	Constraints []*ConstraintDefinition
+	Options     string
 }
 
 // Format formats the node.
@@ -750,6 +949,9 @@ func (ts *TableSpec) Format(buf *TrackedBuffer) {
 	for _, idx := range ts.Indexes {
 		buf.Myprintf(",\n\t%v", idx)
 	}
+	for _, c := range ts.Constraints {
+		buf.Myprintf(",\n\t%v", c)
+	}
 
 	buf.Myprintf("\n)%s", strings.Replace(ts.Options, ", ", ",\n  ", -1))
 }
@@ -764,8 +966,12 @@ func (ts *TableSpec) AddIndex(id *IndexDefinition) {
 	ts.Indexes = append(ts.Indexes, id)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (ts *TableSpec) WalkSubtree(visit Visit) error {
+// AddConstraint appends the given index to the list in the spec
+func (ts *TableSpec) AddConstraint(cd *ConstraintDefinition) {
+	ts.Constraints = append(ts.Constraints, cd)
+}
+
+func (ts *TableSpec) walkSubtree(visit Visit) error {
 	if ts == nil {
 		return nil
 	}
@@ -777,6 +983,12 @@ func (ts *TableSpec) WalkSubtree(visit Visit) error {
 	}
 
 	for _, n := range ts.Indexes {
+		if err := Walk(visit, n); err != nil {
+			return err
+		}
+	}
+
+	for _, n := range ts.Constraints {
 		if err := Walk(visit, n); err != nil {
 			return err
 		}
@@ -796,8 +1008,7 @@ func (col *ColumnDefinition) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v %v", col.Name, &col.Type)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (col *ColumnDefinition) WalkSubtree(visit Visit) error {
+func (col *ColumnDefinition) walkSubtree(visit Visit) error {
 	if col == nil {
 		return nil
 	}
@@ -817,8 +1028,8 @@ type ColumnType struct {
 	// Generic field options.
 	NotNull       BoolVal
 	Autoincrement BoolVal
-	Default       *SQLVal
-	OnUpdate      *SQLVal
+	Default       Expr
+	OnUpdate      Expr
 	Comment       *SQLVal
 
 	// Numeric field options
@@ -890,6 +1101,9 @@ func (ct *ColumnType) Format(buf *TrackedBuffer) {
 	if ct.KeyOpt == colKeyUniqueKey {
 		opts = append(opts, keywordStrings[UNIQUE], keywordStrings[KEY])
 	}
+	if ct.KeyOpt == colKeySpatialKey {
+		opts = append(opts, keywordStrings[SPATIAL], keywordStrings[KEY])
+	}
 	if ct.KeyOpt == colKey {
 		opts = append(opts, keywordStrings[KEY])
 	}
@@ -953,6 +1167,8 @@ func (ct *ColumnType) SQLType() querypb.Type {
 			return sqltypes.Uint64
 		}
 		return sqltypes.Int64
+	case keywordStrings[BOOL], keywordStrings[BOOLEAN]:
+		return sqltypes.Uint8
 	case keywordStrings[TEXT]:
 		return sqltypes.Text
 	case keywordStrings[TINYTEXT]:
@@ -997,14 +1213,31 @@ func (ct *ColumnType) SQLType() querypb.Type {
 		return sqltypes.Bit
 	case keywordStrings[ENUM]:
 		return sqltypes.Enum
+	case keywordStrings[SET]:
+		return sqltypes.Set
 	case keywordStrings[JSON]:
 		return sqltypes.TypeJSON
+	case keywordStrings[GEOMETRY]:
+		return sqltypes.Geometry
+	case keywordStrings[POINT]:
+		return sqltypes.Geometry
+	case keywordStrings[LINESTRING]:
+		return sqltypes.Geometry
+	case keywordStrings[POLYGON]:
+		return sqltypes.Geometry
+	case keywordStrings[GEOMETRYCOLLECTION]:
+		return sqltypes.Geometry
+	case keywordStrings[MULTIPOINT]:
+		return sqltypes.Geometry
+	case keywordStrings[MULTILINESTRING]:
+		return sqltypes.Geometry
+	case keywordStrings[MULTIPOLYGON]:
+		return sqltypes.Geometry
 	}
 	panic("unimplemented type " + ct.Type)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (ct *ColumnType) WalkSubtree(visit Visit) error {
+func (ct *ColumnType) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -1012,7 +1245,7 @@ func (ct *ColumnType) WalkSubtree(visit Visit) error {
 type IndexDefinition struct {
 	Info    *IndexInfo
 	Columns []*IndexColumn
-	Using   ColIdent
+	Options []*IndexOption
 }
 
 // Format formats the node.
@@ -1029,13 +1262,18 @@ func (idx *IndexDefinition) Format(buf *TrackedBuffer) {
 		}
 	}
 	buf.Myprintf(")")
-	if !idx.Using.IsEmpty() {
-		buf.Myprintf(" USING %v", idx.Using)
+
+	for _, opt := range idx.Options {
+		buf.Myprintf(" %s", opt.Name)
+		if opt.Using != "" {
+			buf.Myprintf(" %s", opt.Using)
+		} else {
+			buf.Myprintf(" %v", opt.Value)
+		}
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (idx *IndexDefinition) WalkSubtree(visit Visit) error {
+func (idx *IndexDefinition) walkSubtree(visit Visit) error {
 	if idx == nil {
 		return nil
 	}
@@ -1054,6 +1292,7 @@ type IndexInfo struct {
 	Type    string
 	Name    ColIdent
 	Primary bool
+	Spatial bool
 	Unique  bool
 }
 
@@ -1062,12 +1301,14 @@ func (ii *IndexInfo) Format(buf *TrackedBuffer) {
 	if ii.Primary {
 		buf.Myprintf("%s", ii.Type)
 	} else {
-		buf.Myprintf("%s %v", ii.Type, ii.Name)
+		buf.Myprintf("%s", ii.Type)
+		if !ii.Name.IsEmpty() {
+			buf.Myprintf(" %v", ii.Name)
+		}
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (ii *IndexInfo) WalkSubtree(visit Visit) error {
+func (ii *IndexInfo) walkSubtree(visit Visit) error {
 	return Walk(visit, ii.Name)
 }
 
@@ -1084,6 +1325,13 @@ type LengthScaleOption struct {
 	Scale  *SQLVal
 }
 
+// IndexOption is used for trailing options for indexes: COMMENT, KEY_BLOCK_SIZE, USING
+type IndexOption struct {
+	Name  string
+	Value *SQLVal
+	Using string
+}
+
 // ColumnKeyOption indicates whether or not the given column is defined as an
 // index element and contains the type of the option
 type ColumnKeyOption int
@@ -1091,20 +1339,204 @@ type ColumnKeyOption int
 const (
 	colKeyNone ColumnKeyOption = iota
 	colKeyPrimary
+	colKeySpatialKey
 	colKeyUnique
 	colKeyUniqueKey
 	colKey
 )
 
+// VindexSpec defines a vindex for a CREATE VINDEX or DROP VINDEX statement
+type VindexSpec struct {
+	Name   ColIdent
+	Type   ColIdent
+	Params []VindexParam
+}
+
+// ParseParams parses the vindex parameter list, pulling out the special-case
+// "owner" parameter
+func (node *VindexSpec) ParseParams() (string, map[string]string) {
+	var owner string
+	params := map[string]string{}
+	for _, p := range node.Params {
+		if p.Key.Lowered() == VindexOwnerStr {
+			owner = p.Val
+		} else {
+			params[p.Key.String()] = p.Val
+		}
+	}
+	return owner, params
+}
+
+// Format formats the node. The "CREATE VINDEX" preamble was formatted in
+// the containing DDL node Format, so this just prints the type, any
+// parameters, and optionally the owner
+func (node *VindexSpec) Format(buf *TrackedBuffer) {
+	buf.Myprintf("using %v", node.Type)
+
+	numParams := len(node.Params)
+	if numParams != 0 {
+		buf.Myprintf(" with ")
+		for i, p := range node.Params {
+			if i != 0 {
+				buf.Myprintf(", ")
+			}
+			buf.Myprintf("%v", p)
+		}
+	}
+}
+
+func (node *VindexSpec) walkSubtree(visit Visit) error {
+	err := Walk(visit,
+		node.Name,
+	)
+
+	if err != nil {
+		return err
+	}
+
+	for _, p := range node.Params {
+		err := Walk(visit, p)
+
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// VindexParam defines a key/value parameter for a CREATE VINDEX statement
+type VindexParam struct {
+	Key ColIdent
+	Val string
+}
+
+// Format formats the node.
+func (node VindexParam) Format(buf *TrackedBuffer) {
+	buf.Myprintf("%s=%s", node.Key.String(), node.Val)
+}
+
+func (node VindexParam) walkSubtree(visit Visit) error {
+	return Walk(visit,
+		node.Key,
+	)
+}
+
+// ConstraintDefinition describes a constraint in a CREATE TABLE statement
+type ConstraintDefinition struct {
+	Name    string
+	Details ConstraintInfo
+}
+
+// ConstraintInfo details a constraint in a CREATE TABLE statement
+type ConstraintInfo interface {
+	SQLNode
+	constraintInfo()
+}
+
+// Format formats the node.
+func (c *ConstraintDefinition) Format(buf *TrackedBuffer) {
+	if c.Name != "" {
+		buf.Myprintf("constraint %s ", c.Name)
+	}
+	c.Details.Format(buf)
+}
+
+func (c *ConstraintDefinition) walkSubtree(visit Visit) error {
+	return Walk(visit, c.Details)
+}
+
+// ReferenceAction indicates the action takes by a referential constraint e.g.
+// the `CASCADE` in a `FOREIGN KEY .. ON DELETE CASCADE` table definition.
+type ReferenceAction int
+
+// These map to the SQL-defined reference actions.
+// See https://dev.mysql.com/doc/refman/8.0/en/create-table-foreign-keys.html#foreign-keys-referential-actions
+const (
+	// DefaultAction indicates no action was explicitly specified.
+	DefaultAction ReferenceAction = iota
+	Restrict
+	Cascade
+	NoAction
+	SetNull
+	SetDefault
+)
+
+func (a ReferenceAction) walkSubtree(visit Visit) error { return nil }
+
+// Format formats the node.
+func (a ReferenceAction) Format(buf *TrackedBuffer) {
+	switch a {
+	case Restrict:
+		buf.WriteString("restrict")
+	case Cascade:
+		buf.WriteString("cascade")
+	case NoAction:
+		buf.WriteString("no action")
+	case SetNull:
+		buf.WriteString("set null")
+	case SetDefault:
+		buf.WriteString("set default")
+	}
+}
+
+// ForeignKeyDefinition describes a foreign key in a CREATE TABLE statement
+type ForeignKeyDefinition struct {
+	Source            Columns
+	ReferencedTable   TableName
+	ReferencedColumns Columns
+	OnDelete          ReferenceAction
+	OnUpdate          ReferenceAction
+}
+
+var _ ConstraintInfo = &ForeignKeyDefinition{}
+
+// Format formats the node.
+func (f *ForeignKeyDefinition) Format(buf *TrackedBuffer) {
+	buf.Myprintf("foreign key %v references %v %v", f.Source, f.ReferencedTable, f.ReferencedColumns)
+	if f.OnDelete != DefaultAction {
+		buf.Myprintf(" on delete %v", f.OnDelete)
+	}
+	if f.OnUpdate != DefaultAction {
+		buf.Myprintf(" on update %v", f.OnUpdate)
+	}
+}
+
+func (f *ForeignKeyDefinition) constraintInfo() {}
+
+func (f *ForeignKeyDefinition) walkSubtree(visit Visit) error {
+	if err := Walk(visit, f.Source); err != nil {
+		return err
+	}
+	if err := Walk(visit, f.ReferencedTable); err != nil {
+		return err
+	}
+	return Walk(visit, f.ReferencedColumns)
+}
+
 // Show represents a show statement.
 type Show struct {
-	Type    string
-	OnTable TableName
-	Scope   string
+	Type                   string
+	OnTable                TableName
+	Table                  TableName
+	ShowTablesOpt          *ShowTablesOpt
+	Scope                  string
+	ShowCollationFilterOpt *Expr
 }
 
 // Format formats the node.
 func (node *Show) Format(buf *TrackedBuffer) {
+	if (node.Type == "tables" || node.Type == "columns" || node.Type == "fields") && node.ShowTablesOpt != nil {
+		opt := node.ShowTablesOpt
+		buf.Myprintf("show %s%s", opt.Full, node.Type)
+		if (node.Type == "columns" || node.Type == "fields") && node.HasOnTable() {
+			buf.Myprintf(" from %v", node.OnTable)
+		}
+		if opt.DbName != "" {
+			buf.Myprintf(" from %s", opt.DbName)
+		}
+		buf.Myprintf("%v", opt.Filter)
+		return
+	}
 	if node.Scope == "" {
 		buf.Myprintf("show %s", node.Type)
 	} else {
@@ -1113,6 +1545,12 @@ func (node *Show) Format(buf *TrackedBuffer) {
 	if node.HasOnTable() {
 		buf.Myprintf(" on %v", node.OnTable)
 	}
+	if node.Type == "collation" && node.ShowCollationFilterOpt != nil {
+		buf.Myprintf(" where %v", *node.ShowCollationFilterOpt)
+	}
+	if node.HasTable() {
+		buf.Myprintf(" %v", node.Table)
+	}
 }
 
 // HasOnTable returns true if the show statement has an "on" clause
@@ -1120,8 +1558,42 @@ func (node *Show) HasOnTable() bool {
 	return node.OnTable.Name.v != ""
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Show) WalkSubtree(visit Visit) error {
+// HasTable returns true if the show statement has a parsed table name.
+// Not all show statements parse table names.
+func (node *Show) HasTable() bool {
+	return node.Table.Name.v != ""
+}
+
+func (node *Show) walkSubtree(visit Visit) error {
+	return nil
+}
+
+// ShowTablesOpt is show tables option
+type ShowTablesOpt struct {
+	Full   string
+	DbName string
+	Filter *ShowFilter
+}
+
+// ShowFilter is show tables filter
+type ShowFilter struct {
+	Like   string
+	Filter Expr
+}
+
+// Format formats the node.
+func (node *ShowFilter) Format(buf *TrackedBuffer) {
+	if node == nil {
+		return
+	}
+	if node.Like != "" {
+		buf.Myprintf(" like '%s'", node.Like)
+	} else {
+		buf.Myprintf(" where %v", node.Filter)
+	}
+}
+
+func (node *ShowFilter) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -1139,8 +1611,7 @@ func (node *Use) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Use) WalkSubtree(visit Visit) error {
+func (node *Use) walkSubtree(visit Visit) error {
 	return Walk(visit, node.DBName)
 }
 
@@ -1152,8 +1623,7 @@ func (node *Begin) Format(buf *TrackedBuffer) {
 	buf.WriteString("begin")
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Begin) WalkSubtree(visit Visit) error {
+func (node *Begin) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -1165,8 +1635,7 @@ func (node *Commit) Format(buf *TrackedBuffer) {
 	buf.WriteString("commit")
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Commit) WalkSubtree(visit Visit) error {
+func (node *Commit) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -1178,8 +1647,7 @@ func (node *Rollback) Format(buf *TrackedBuffer) {
 	buf.WriteString("rollback")
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Rollback) WalkSubtree(visit Visit) error {
+func (node *Rollback) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -1193,8 +1661,7 @@ func (node *OtherRead) Format(buf *TrackedBuffer) {
 	buf.WriteString("otherread")
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *OtherRead) WalkSubtree(visit Visit) error {
+func (node *OtherRead) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -1209,8 +1676,7 @@ func (node *OtherAdmin) Format(buf *TrackedBuffer) {
 	buf.WriteString("otheradmin")
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *OtherAdmin) WalkSubtree(visit Visit) error {
+func (node *OtherAdmin) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -1224,8 +1690,7 @@ func (node Comments) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node Comments) WalkSubtree(visit Visit) error {
+func (node Comments) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -1241,8 +1706,7 @@ func (node SelectExprs) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node SelectExprs) WalkSubtree(visit Visit) error {
+func (node SelectExprs) walkSubtree(visit Visit) error {
 	for _, n := range node {
 		if err := Walk(visit, n); err != nil {
 			return err
@@ -1274,8 +1738,7 @@ func (node *StarExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("*")
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *StarExpr) WalkSubtree(visit Visit) error {
+func (node *StarExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1299,8 +1762,7 @@ func (node *AliasedExpr) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *AliasedExpr) WalkSubtree(visit Visit) error {
+func (node *AliasedExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1321,8 +1783,7 @@ func (node Nextval) Format(buf *TrackedBuffer) {
 	buf.Myprintf("next %v values", node.Expr)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node Nextval) WalkSubtree(visit Visit) error {
+func (node Nextval) walkSubtree(visit Visit) error {
 	return Walk(visit, node.Expr)
 }
 
@@ -1342,8 +1803,7 @@ func (node Columns) Format(buf *TrackedBuffer) {
 	buf.WriteString(")")
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node Columns) WalkSubtree(visit Visit) error {
+func (node Columns) walkSubtree(visit Visit) error {
 	for _, n := range node {
 		if err := Walk(visit, n); err != nil {
 			return err
@@ -1379,8 +1839,7 @@ func (node Partitions) Format(buf *TrackedBuffer) {
 	buf.WriteString(")")
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node Partitions) WalkSubtree(visit Visit) error {
+func (node Partitions) walkSubtree(visit Visit) error {
 	for _, n := range node {
 		if err := Walk(visit, n); err != nil {
 			return err
@@ -1401,8 +1860,7 @@ func (node TableExprs) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node TableExprs) WalkSubtree(visit Visit) error {
+func (node TableExprs) walkSubtree(visit Visit) error {
 	for _, n := range node {
 		if err := Walk(visit, n); err != nil {
 			return err
@@ -1443,8 +1901,7 @@ func (node *AliasedTableExpr) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *AliasedTableExpr) WalkSubtree(visit Visit) error {
+func (node *AliasedTableExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1484,8 +1941,7 @@ func (node TableNames) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node TableNames) WalkSubtree(visit Visit) error {
+func (node TableNames) walkSubtree(visit Visit) error {
 	for _, n := range node {
 		if err := Walk(visit, n); err != nil {
 			return err
@@ -1514,8 +1970,7 @@ func (node TableName) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v", node.Name)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node TableName) WalkSubtree(visit Visit) error {
+func (node TableName) walkSubtree(visit Visit) error {
 	return Walk(
 		visit,
 		node.Name,
@@ -1549,8 +2004,7 @@ func (node *ParenTableExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("(%v)", node.Exprs)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *ParenTableExpr) WalkSubtree(visit Visit) error {
+func (node *ParenTableExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1577,8 +2031,7 @@ func (node JoinCondition) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node JoinCondition) WalkSubtree(visit Visit) error {
+func (node JoinCondition) walkSubtree(visit Visit) error {
 	return Walk(
 		visit,
 		node.On,
@@ -1610,8 +2063,7 @@ func (node *JoinTableExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v %s %v%v", node.LeftExpr, node.Join, node.RightExpr, node.Condition)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *JoinTableExpr) WalkSubtree(visit Visit) error {
+func (node *JoinTableExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1647,8 +2099,7 @@ func (node *IndexHints) Format(buf *TrackedBuffer) {
 	buf.Myprintf(")")
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *IndexHints) WalkSubtree(visit Visit) error {
+func (node *IndexHints) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1689,8 +2140,7 @@ func (node *Where) Format(buf *TrackedBuffer) {
 	buf.Myprintf(" %s %v", node.Type, node.Expr)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Where) WalkSubtree(visit Visit) error {
+func (node *Where) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1703,36 +2153,72 @@ func (node *Where) WalkSubtree(visit Visit) error {
 // Expr represents an expression.
 type Expr interface {
 	iExpr()
+	// replace replaces any subexpression that matches
+	// from with to. The implementation can use the
+	// replaceExprs convenience function.
+	replace(from, to Expr) bool
 	SQLNode
 }
 
-func (*AndExpr) iExpr()          {}
-func (*OrExpr) iExpr()           {}
-func (*NotExpr) iExpr()          {}
-func (*ParenExpr) iExpr()        {}
-func (*ComparisonExpr) iExpr()   {}
-func (*RangeCond) iExpr()        {}
-func (*IsExpr) iExpr()           {}
-func (*ExistsExpr) iExpr()       {}
-func (*SQLVal) iExpr()           {}
-func (*NullVal) iExpr()          {}
-func (BoolVal) iExpr()           {}
-func (*ColName) iExpr()          {}
-func (ValTuple) iExpr()          {}
-func (*Subquery) iExpr()         {}
-func (ListArg) iExpr()           {}
-func (*BinaryExpr) iExpr()       {}
-func (*UnaryExpr) iExpr()        {}
-func (*IntervalExpr) iExpr()     {}
-func (*CollateExpr) iExpr()      {}
-func (*FuncExpr) iExpr()         {}
-func (*CaseExpr) iExpr()         {}
-func (*ValuesFuncExpr) iExpr()   {}
-func (*ConvertExpr) iExpr()      {}
-func (*ConvertUsingExpr) iExpr() {}
-func (*MatchExpr) iExpr()        {}
-func (*GroupConcatExpr) iExpr()  {}
-func (*Default) iExpr()          {}
+func (*AndExpr) iExpr()           {}
+func (*OrExpr) iExpr()            {}
+func (*NotExpr) iExpr()           {}
+func (*ParenExpr) iExpr()         {}
+func (*ComparisonExpr) iExpr()    {}
+func (*RangeCond) iExpr()         {}
+func (*IsExpr) iExpr()            {}
+func (*ExistsExpr) iExpr()        {}
+func (*SQLVal) iExpr()            {}
+func (*NullVal) iExpr()           {}
+func (BoolVal) iExpr()            {}
+func (*ColName) iExpr()           {}
+func (ValTuple) iExpr()           {}
+func (*Subquery) iExpr()          {}
+func (ListArg) iExpr()            {}
+func (*BinaryExpr) iExpr()        {}
+func (*UnaryExpr) iExpr()         {}
+func (*IntervalExpr) iExpr()      {}
+func (*CollateExpr) iExpr()       {}
+func (*FuncExpr) iExpr()          {}
+func (*TimestampFuncExpr) iExpr() {}
+func (*CurTimeFuncExpr) iExpr()   {}
+func (*CaseExpr) iExpr()          {}
+func (*ValuesFuncExpr) iExpr()    {}
+func (*ConvertExpr) iExpr()       {}
+func (*SubstrExpr) iExpr()        {}
+func (*ConvertUsingExpr) iExpr()  {}
+func (*MatchExpr) iExpr()         {}
+func (*GroupConcatExpr) iExpr()   {}
+func (*Default) iExpr()           {}
+
+// ReplaceExpr finds the from expression from root
+// and replaces it with to. If from matches root,
+// then to is returned.
+func ReplaceExpr(root, from, to Expr) Expr {
+	if root == from {
+		return to
+	}
+	root.replace(from, to)
+	return root
+}
+
+// replaceExprs is a convenience function used by implementors
+// of the replace method.
+func replaceExprs(from, to Expr, exprs ...*Expr) bool {
+	for _, expr := range exprs {
+		if *expr == nil {
+			continue
+		}
+		if *expr == from {
+			*expr = to
+			return true
+		}
+		if (*expr).replace(from, to) {
+			return true
+		}
+	}
+	return false
+}
 
 // Exprs represents a list of value expressions.
 // It's not a valid expression because it's not parenthesized.
@@ -1747,8 +2233,7 @@ func (node Exprs) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node Exprs) WalkSubtree(visit Visit) error {
+func (node Exprs) walkSubtree(visit Visit) error {
 	for _, n := range node {
 		if err := Walk(visit, n); err != nil {
 			return err
@@ -1767,8 +2252,7 @@ func (node *AndExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v and %v", node.Left, node.Right)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *AndExpr) WalkSubtree(visit Visit) error {
+func (node *AndExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1777,6 +2261,10 @@ func (node *AndExpr) WalkSubtree(visit Visit) error {
 		node.Left,
 		node.Right,
 	)
+}
+
+func (node *AndExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Left, &node.Right)
 }
 
 // OrExpr represents an OR expression.
@@ -1789,8 +2277,7 @@ func (node *OrExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v or %v", node.Left, node.Right)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *OrExpr) WalkSubtree(visit Visit) error {
+func (node *OrExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1799,6 +2286,10 @@ func (node *OrExpr) WalkSubtree(visit Visit) error {
 		node.Left,
 		node.Right,
 	)
+}
+
+func (node *OrExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Left, &node.Right)
 }
 
 // NotExpr represents a NOT expression.
@@ -1811,8 +2302,7 @@ func (node *NotExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("not %v", node.Expr)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *NotExpr) WalkSubtree(visit Visit) error {
+func (node *NotExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1820,6 +2310,10 @@ func (node *NotExpr) WalkSubtree(visit Visit) error {
 		visit,
 		node.Expr,
 	)
+}
+
+func (node *NotExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Expr)
 }
 
 // ParenExpr represents a parenthesized boolean expression.
@@ -1832,8 +2326,7 @@ func (node *ParenExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("(%v)", node.Expr)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *ParenExpr) WalkSubtree(visit Visit) error {
+func (node *ParenExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1841,6 +2334,10 @@ func (node *ParenExpr) WalkSubtree(visit Visit) error {
 		visit,
 		node.Expr,
 	)
+}
+
+func (node *ParenExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Expr)
 }
 
 // ComparisonExpr represents a two-value comparison expression.
@@ -1877,8 +2374,7 @@ func (node *ComparisonExpr) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *ComparisonExpr) WalkSubtree(visit Visit) error {
+func (node *ComparisonExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1888,6 +2384,36 @@ func (node *ComparisonExpr) WalkSubtree(visit Visit) error {
 		node.Right,
 		node.Escape,
 	)
+}
+
+func (node *ComparisonExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Left, &node.Right, &node.Escape)
+}
+
+// IsImpossible returns true if the comparison in the expression can never evaluate to true.
+// Note that this is not currently exhaustive to ALL impossible comparisons.
+func (node *ComparisonExpr) IsImpossible() bool {
+	var left, right *SQLVal
+	var ok bool
+	if left, ok = node.Left.(*SQLVal); !ok {
+		return false
+	}
+	if right, ok = node.Right.(*SQLVal); !ok {
+		return false
+	}
+	if node.Operator == NotEqualStr && left.Type == right.Type {
+		if len(left.Val) != len(right.Val) {
+			return false
+		}
+
+		for i := range left.Val {
+			if left.Val[i] != right.Val[i] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // RangeCond represents a BETWEEN or a NOT BETWEEN expression.
@@ -1908,8 +2434,7 @@ func (node *RangeCond) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v %s %v and %v", node.Left, node.Operator, node.From, node.To)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *RangeCond) WalkSubtree(visit Visit) error {
+func (node *RangeCond) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1919,6 +2444,10 @@ func (node *RangeCond) WalkSubtree(visit Visit) error {
 		node.From,
 		node.To,
 	)
+}
+
+func (node *RangeCond) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Left, &node.From, &node.To)
 }
 
 // IsExpr represents an IS ... or an IS NOT ... expression.
@@ -1942,8 +2471,7 @@ func (node *IsExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v %s", node.Expr, node.Operator)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *IsExpr) WalkSubtree(visit Visit) error {
+func (node *IsExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1951,6 +2479,10 @@ func (node *IsExpr) WalkSubtree(visit Visit) error {
 		visit,
 		node.Expr,
 	)
+}
+
+func (node *IsExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Expr)
 }
 
 // ExistsExpr represents an EXISTS expression.
@@ -1963,8 +2495,7 @@ func (node *ExistsExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("exists %v", node.Subquery)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *ExistsExpr) WalkSubtree(visit Visit) error {
+func (node *ExistsExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -1972,6 +2503,10 @@ func (node *ExistsExpr) WalkSubtree(visit Visit) error {
 		visit,
 		node.Subquery,
 	)
+}
+
+func (node *ExistsExpr) replace(from, to Expr) bool {
+	return false
 }
 
 // ExprFromValue converts the given Value into an Expr or returns an error.
@@ -2069,9 +2604,12 @@ func (node *SQLVal) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *SQLVal) WalkSubtree(visit Visit) error {
+func (node *SQLVal) walkSubtree(visit Visit) error {
 	return nil
+}
+
+func (node *SQLVal) replace(from, to Expr) bool {
+	return false
 }
 
 // HexDecode decodes the hexval into bytes.
@@ -2092,9 +2630,12 @@ func (node *NullVal) Format(buf *TrackedBuffer) {
 	buf.Myprintf("null")
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *NullVal) WalkSubtree(visit Visit) error {
+func (node *NullVal) walkSubtree(visit Visit) error {
 	return nil
+}
+
+func (node *NullVal) replace(from, to Expr) bool {
+	return false
 }
 
 // BoolVal is true or false.
@@ -2109,9 +2650,12 @@ func (node BoolVal) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node BoolVal) WalkSubtree(visit Visit) error {
+func (node BoolVal) walkSubtree(visit Visit) error {
 	return nil
+}
+
+func (node BoolVal) replace(from, to Expr) bool {
+	return false
 }
 
 // ColName represents a column name.
@@ -2133,8 +2677,7 @@ func (node *ColName) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v", node.Name)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *ColName) WalkSubtree(visit Visit) error {
+func (node *ColName) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2143,6 +2686,10 @@ func (node *ColName) WalkSubtree(visit Visit) error {
 		node.Name,
 		node.Qualifier,
 	)
+}
+
+func (node *ColName) replace(from, to Expr) bool {
+	return false
 }
 
 // Equal returns true if the column names match.
@@ -2173,9 +2720,17 @@ func (node ValTuple) Format(buf *TrackedBuffer) {
 	buf.Myprintf("(%v)", Exprs(node))
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node ValTuple) WalkSubtree(visit Visit) error {
+func (node ValTuple) walkSubtree(visit Visit) error {
 	return Walk(visit, Exprs(node))
+}
+
+func (node ValTuple) replace(from, to Expr) bool {
+	for i := range node {
+		if replaceExprs(from, to, &node[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 // Subquery represents a subquery.
@@ -2188,8 +2743,7 @@ func (node *Subquery) Format(buf *TrackedBuffer) {
 	buf.Myprintf("(%v)", node.Select)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Subquery) WalkSubtree(visit Visit) error {
+func (node *Subquery) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2197,6 +2751,10 @@ func (node *Subquery) WalkSubtree(visit Visit) error {
 		visit,
 		node.Select,
 	)
+}
+
+func (node *Subquery) replace(from, to Expr) bool {
+	return false
 }
 
 // ListArg represents a named list argument.
@@ -2207,9 +2765,12 @@ func (node ListArg) Format(buf *TrackedBuffer) {
 	buf.WriteArg(string(node))
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node ListArg) WalkSubtree(visit Visit) error {
+func (node ListArg) walkSubtree(visit Visit) error {
 	return nil
+}
+
+func (node ListArg) replace(from, to Expr) bool {
+	return false
 }
 
 // BinaryExpr represents a binary value expression.
@@ -2238,8 +2799,7 @@ func (node *BinaryExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v %s %v", node.Left, node.Operator, node.Right)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *BinaryExpr) WalkSubtree(visit Visit) error {
+func (node *BinaryExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2248,6 +2808,10 @@ func (node *BinaryExpr) WalkSubtree(visit Visit) error {
 		node.Left,
 		node.Right,
 	)
+}
+
+func (node *BinaryExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Left, &node.Right)
 }
 
 // UnaryExpr represents a unary value expression.
@@ -2264,6 +2828,7 @@ const (
 	BangStr    = "!"
 	BinaryStr  = "binary "
 	UBinaryStr = "_binary "
+	Utf8mb4Str = "_utf8mb4 "
 )
 
 // Format formats the node.
@@ -2275,8 +2840,7 @@ func (node *UnaryExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%s%v", node.Operator, node.Expr)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *UnaryExpr) WalkSubtree(visit Visit) error {
+func (node *UnaryExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2284,6 +2848,10 @@ func (node *UnaryExpr) WalkSubtree(visit Visit) error {
 		visit,
 		node.Expr,
 	)
+}
+
+func (node *UnaryExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Expr)
 }
 
 // IntervalExpr represents a date-time INTERVAL expression.
@@ -2297,8 +2865,7 @@ func (node *IntervalExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("interval %v %s", node.Expr, node.Unit)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *IntervalExpr) WalkSubtree(visit Visit) error {
+func (node *IntervalExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2306,6 +2873,70 @@ func (node *IntervalExpr) WalkSubtree(visit Visit) error {
 		visit,
 		node.Expr,
 	)
+}
+
+func (node *IntervalExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Expr)
+}
+
+// TimestampFuncExpr represents the function and arguments for TIMESTAMP{ADD,DIFF} functions.
+type TimestampFuncExpr struct {
+	Name  string
+	Expr1 Expr
+	Expr2 Expr
+	Unit  string
+}
+
+// Format formats the node.
+func (node *TimestampFuncExpr) Format(buf *TrackedBuffer) {
+	buf.Myprintf("%s(%s, %v, %v)", node.Name, node.Unit, node.Expr1, node.Expr2)
+}
+
+func (node *TimestampFuncExpr) walkSubtree(visit Visit) error {
+	if node == nil {
+		return nil
+	}
+	return Walk(
+		visit,
+		node.Expr1,
+		node.Expr2,
+	)
+}
+
+func (node *TimestampFuncExpr) replace(from, to Expr) bool {
+	if replaceExprs(from, to, &node.Expr1) {
+		return true
+	}
+	if replaceExprs(from, to, &node.Expr2) {
+		return true
+	}
+	return false
+}
+
+// CurTimeFuncExpr represents the function and arguments for CURRENT DATE/TIME functions
+// supported functions are documented in the grammar
+type CurTimeFuncExpr struct {
+	Name ColIdent
+	Fsp  Expr // fractional seconds precision, integer from 0 to 6
+}
+
+// Format formats the node.
+func (node *CurTimeFuncExpr) Format(buf *TrackedBuffer) {
+	buf.Myprintf("%s(%v)", node.Name.String(), node.Fsp)
+}
+
+func (node *CurTimeFuncExpr) walkSubtree(visit Visit) error {
+	if node == nil {
+		return nil
+	}
+	return Walk(
+		visit,
+		node.Fsp,
+	)
+}
+
+func (node *CurTimeFuncExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Fsp)
 }
 
 // CollateExpr represents dynamic collate operator.
@@ -2319,8 +2950,7 @@ func (node *CollateExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v collate %s", node.Expr, node.Charset)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *CollateExpr) WalkSubtree(visit Visit) error {
+func (node *CollateExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2328,6 +2958,10 @@ func (node *CollateExpr) WalkSubtree(visit Visit) error {
 		visit,
 		node.Expr,
 	)
+}
+
+func (node *CollateExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Expr)
 }
 
 // FuncExpr represents a function call.
@@ -2353,8 +2987,7 @@ func (node *FuncExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%s(%s%v)", node.Name.String(), distinct, node.Exprs)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *FuncExpr) WalkSubtree(visit Visit) error {
+func (node *FuncExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2364,6 +2997,19 @@ func (node *FuncExpr) WalkSubtree(visit Visit) error {
 		node.Name,
 		node.Exprs,
 	)
+}
+
+func (node *FuncExpr) replace(from, to Expr) bool {
+	for _, sel := range node.Exprs {
+		aliased, ok := sel.(*AliasedExpr)
+		if !ok {
+			continue
+		}
+		if replaceExprs(from, to, &aliased.Expr) {
+			return true
+		}
+	}
+	return false
 }
 
 // Aggregates is a map of all aggregate functions.
@@ -2404,8 +3050,7 @@ func (node *GroupConcatExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("group_concat(%s%v%v%s)", node.Distinct, node.Exprs, node.OrderBy, node.Separator)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *GroupConcatExpr) WalkSubtree(visit Visit) error {
+func (node *GroupConcatExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2416,24 +3061,89 @@ func (node *GroupConcatExpr) WalkSubtree(visit Visit) error {
 	)
 }
 
+func (node *GroupConcatExpr) replace(from, to Expr) bool {
+	for _, sel := range node.Exprs {
+		aliased, ok := sel.(*AliasedExpr)
+		if !ok {
+			continue
+		}
+		if replaceExprs(from, to, &aliased.Expr) {
+			return true
+		}
+	}
+	for _, order := range node.OrderBy {
+		if replaceExprs(from, to, &order.Expr) {
+			return true
+		}
+	}
+	return false
+}
+
 // ValuesFuncExpr represents a function call.
 type ValuesFuncExpr struct {
-	Name ColIdent
+	Name *ColName
 }
 
 // Format formats the node.
 func (node *ValuesFuncExpr) Format(buf *TrackedBuffer) {
-	buf.Myprintf("values(%s)", node.Name.String())
+	buf.Myprintf("values(%v)", node.Name)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *ValuesFuncExpr) WalkSubtree(visit Visit) error {
+func (node *ValuesFuncExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
 	return Walk(
 		visit,
 		node.Name,
+	)
+}
+
+func (node *ValuesFuncExpr) replace(from, to Expr) bool {
+	return false
+}
+
+// SubstrExpr represents a call to SubstrExpr(column, value_expression) or SubstrExpr(column, value_expression,value_expression)
+// also supported syntax SubstrExpr(column from value_expression for value_expression).
+// Additionally to column names, SubstrExpr is also supported for string values, e.g.:
+// SubstrExpr('static string value', value_expression, value_expression)
+// In this case StrVal will be set instead of Name.
+type SubstrExpr struct {
+	Name   *ColName
+	StrVal *SQLVal
+	From   Expr
+	To     Expr
+}
+
+// Format formats the node.
+func (node *SubstrExpr) Format(buf *TrackedBuffer) {
+	var val interface{}
+	if node.Name != nil {
+		val = node.Name
+	} else {
+		val = node.StrVal
+	}
+
+	if node.To == nil {
+		buf.Myprintf("substr(%v, %v)", val, node.From)
+	} else {
+		buf.Myprintf("substr(%v, %v, %v)", val, node.From, node.To)
+	}
+}
+
+func (node *SubstrExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.From, &node.To)
+}
+
+func (node *SubstrExpr) walkSubtree(visit Visit) error {
+	if node == nil || node.Name == nil {
+		return nil
+	}
+	return Walk(
+		visit,
+		node.Name,
+		node.From,
+		node.To,
 	)
 }
 
@@ -2449,8 +3159,7 @@ func (node *ConvertExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("convert(%v, %v)", node.Expr, node.Type)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *ConvertExpr) WalkSubtree(visit Visit) error {
+func (node *ConvertExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2459,6 +3168,10 @@ func (node *ConvertExpr) WalkSubtree(visit Visit) error {
 		node.Expr,
 		node.Type,
 	)
+}
+
+func (node *ConvertExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Expr)
 }
 
 // ConvertUsingExpr represents a call to CONVERT(expr USING charset).
@@ -2472,8 +3185,7 @@ func (node *ConvertUsingExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("convert(%v using %s)", node.Expr, node.Type)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *ConvertUsingExpr) WalkSubtree(visit Visit) error {
+func (node *ConvertUsingExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2481,6 +3193,10 @@ func (node *ConvertUsingExpr) WalkSubtree(visit Visit) error {
 		visit,
 		node.Expr,
 	)
+}
+
+func (node *ConvertUsingExpr) replace(from, to Expr) bool {
+	return replaceExprs(from, to, &node.Expr)
 }
 
 // ConvertType represents the type in call to CONVERT(expr, type)
@@ -2495,6 +3211,7 @@ type ConvertType struct {
 // this string is "character set" and this comment is required
 const (
 	CharacterSetStr = " character set"
+	CharsetStr      = "charset"
 )
 
 // Format formats the node.
@@ -2512,8 +3229,7 @@ func (node *ConvertType) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *ConvertType) WalkSubtree(visit Visit) error {
+func (node *ConvertType) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -2537,8 +3253,7 @@ func (node *MatchExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("match(%v) against (%v%s)", node.Columns, node.Expr, node.Option)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *MatchExpr) WalkSubtree(visit Visit) error {
+func (node *MatchExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2547,6 +3262,19 @@ func (node *MatchExpr) WalkSubtree(visit Visit) error {
 		node.Columns,
 		node.Expr,
 	)
+}
+
+func (node *MatchExpr) replace(from, to Expr) bool {
+	for _, sel := range node.Columns {
+		aliased, ok := sel.(*AliasedExpr)
+		if !ok {
+			continue
+		}
+		if replaceExprs(from, to, &aliased.Expr) {
+			return true
+		}
+	}
+	return replaceExprs(from, to, &node.Expr)
 }
 
 // CaseExpr represents a CASE expression.
@@ -2571,8 +3299,7 @@ func (node *CaseExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("end")
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *CaseExpr) WalkSubtree(visit Visit) error {
+func (node *CaseExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2585,6 +3312,15 @@ func (node *CaseExpr) WalkSubtree(visit Visit) error {
 		}
 	}
 	return Walk(visit, node.Else)
+}
+
+func (node *CaseExpr) replace(from, to Expr) bool {
+	for _, when := range node.Whens {
+		if replaceExprs(from, to, &when.Cond, &when.Val) {
+			return true
+		}
+	}
+	return replaceExprs(from, to, &node.Expr, &node.Else)
 }
 
 // Default represents a DEFAULT expression.
@@ -2600,9 +3336,12 @@ func (node *Default) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Default) WalkSubtree(visit Visit) error {
+func (node *Default) walkSubtree(visit Visit) error {
 	return nil
+}
+
+func (node *Default) replace(from, to Expr) bool {
+	return false
 }
 
 // When represents a WHEN sub-expression.
@@ -2616,8 +3355,7 @@ func (node *When) Format(buf *TrackedBuffer) {
 	buf.Myprintf("when %v then %v", node.Cond, node.Val)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *When) WalkSubtree(visit Visit) error {
+func (node *When) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2640,8 +3378,7 @@ func (node GroupBy) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node GroupBy) WalkSubtree(visit Visit) error {
+func (node GroupBy) walkSubtree(visit Visit) error {
 	for _, n := range node {
 		if err := Walk(visit, n); err != nil {
 			return err
@@ -2662,8 +3399,7 @@ func (node OrderBy) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node OrderBy) WalkSubtree(visit Visit) error {
+func (node OrderBy) walkSubtree(visit Visit) error {
 	for _, n := range node {
 		if err := Walk(visit, n); err != nil {
 			return err
@@ -2700,8 +3436,7 @@ func (node *Order) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v %s", node.Expr, node.Direction)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Order) WalkSubtree(visit Visit) error {
+func (node *Order) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2728,8 +3463,7 @@ func (node *Limit) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v", node.Rowcount)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *Limit) WalkSubtree(visit Visit) error {
+func (node *Limit) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2752,8 +3486,7 @@ func (node Values) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node Values) WalkSubtree(visit Visit) error {
+func (node Values) walkSubtree(visit Visit) error {
 	for _, n := range node {
 		if err := Walk(visit, n); err != nil {
 			return err
@@ -2774,8 +3507,7 @@ func (node UpdateExprs) Format(buf *TrackedBuffer) {
 	}
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node UpdateExprs) WalkSubtree(visit Visit) error {
+func (node UpdateExprs) walkSubtree(visit Visit) error {
 	for _, n := range node {
 		if err := Walk(visit, n); err != nil {
 			return err
@@ -2795,8 +3527,72 @@ func (node *UpdateExpr) Format(buf *TrackedBuffer) {
 	buf.Myprintf("%v = %v", node.Name, node.Expr)
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node *UpdateExpr) WalkSubtree(visit Visit) error {
+func (node *UpdateExpr) walkSubtree(visit Visit) error {
+	if node == nil {
+		return nil
+	}
+	return Walk(
+		visit,
+		node.Name,
+		node.Expr,
+	)
+}
+
+// SetExprs represents a list of set expressions.
+type SetExprs []*SetExpr
+
+// Format formats the node.
+func (node SetExprs) Format(buf *TrackedBuffer) {
+	var prefix string
+	for _, n := range node {
+		buf.Myprintf("%s%v", prefix, n)
+		prefix = ", "
+	}
+}
+
+func (node SetExprs) walkSubtree(visit Visit) error {
+	for _, n := range node {
+		if err := Walk(visit, n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetExpr represents a set expression.
+type SetExpr struct {
+	Name ColIdent
+	Expr Expr
+}
+
+// SetExpr.Expr, for SET TRANSACTION ... or START TRANSACTION
+const (
+	// TransactionStr is the Name for a SET TRANSACTION statement
+	TransactionStr = "transaction"
+
+	IsolationLevelReadUncommitted = "isolation level read uncommitted"
+	IsolationLevelReadCommitted   = "isolation level read committed"
+	IsolationLevelRepeatableRead  = "isolation level repeatable read"
+	IsolationLevelSerializable    = "isolation level serializable"
+
+	TxReadOnly  = "read only"
+	TxReadWrite = "read write"
+)
+
+// Format formats the node.
+func (node *SetExpr) Format(buf *TrackedBuffer) {
+	// We don't have to backtick set variable names.
+	if node.Name.EqualString("charset") || node.Name.EqualString("names") {
+		buf.Myprintf("%s %v", node.Name.String(), node.Expr)
+	} else if node.Name.EqualString(TransactionStr) {
+		sqlVal := node.Expr.(*SQLVal)
+		buf.Myprintf("%s %s", node.Name.String(), strings.ToLower(string(sqlVal.Val)))
+	} else {
+		buf.Myprintf("%s = %v", node.Name.String(), node.Expr)
+	}
+}
+
+func (node *SetExpr) walkSubtree(visit Visit) error {
 	if node == nil {
 		return nil
 	}
@@ -2818,8 +3614,7 @@ func (node OnDup) Format(buf *TrackedBuffer) {
 	buf.Myprintf(" on duplicate key update %v", UpdateExprs(node))
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node OnDup) WalkSubtree(visit Visit) error {
+func (node OnDup) walkSubtree(visit Visit) error {
 	return Walk(visit, UpdateExprs(node))
 }
 
@@ -2845,8 +3640,7 @@ func (node ColIdent) Format(buf *TrackedBuffer) {
 	formatID(buf, node.val, node.Lowered())
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node ColIdent) WalkSubtree(visit Visit) error {
+func (node ColIdent) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -2924,8 +3718,7 @@ func (node TableIdent) Format(buf *TrackedBuffer) {
 	formatID(buf, node.v, strings.ToLower(node.v))
 }
 
-// WalkSubtree walks the nodes of the subtree.
-func (node TableIdent) WalkSubtree(visit Visit) error {
+func (node TableIdent) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -2965,8 +3758,13 @@ func (node *TableIdent) UnmarshalJSON(b []byte) error {
 }
 
 func formatID(buf *TrackedBuffer, original, lowered string) {
+	isDbSystemVariable := false
+	if len(original) > 1 && original[:2] == "@@" {
+		isDbSystemVariable = true
+	}
+
 	for i, c := range original {
-		if !isLetter(uint16(c)) {
+		if !isLetter(uint16(c)) && (!isDbSystemVariable || !isCarat(uint16(c))) {
 			if i == 0 || !isDigit(uint16(c)) {
 				goto mustEscape
 			}
@@ -2990,7 +3788,7 @@ mustEscape:
 }
 
 func compliantName(in string) string {
-	var buf bytes.Buffer
+	var buf strings.Builder
 	for i, c := range in {
 		if !isLetter(uint16(c)) {
 			if i == 0 || !isDigit(uint16(c)) {

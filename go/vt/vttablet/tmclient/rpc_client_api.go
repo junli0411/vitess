@@ -20,16 +20,17 @@ import (
 	"flag"
 	"time"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/vt/hook"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
 	"golang.org/x/net/context"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	replicationdatapb "github.com/youtube/vitess/go/vt/proto/replicationdata"
-	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/vt/hook"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/mysqlctl/tmutils"
+
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	replicationdatapb "vitess.io/vitess/go/vt/proto/replicationdata"
+	tabletmanagerdatapb "vitess.io/vitess/go/vt/proto/tabletmanagerdata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // TabletManagerProtocol is the implementation to use for tablet
@@ -88,6 +89,10 @@ type TabletManagerClient interface {
 	// ApplySchema will apply a schema change
 	ApplySchema(ctx context.Context, tablet *topodatapb.Tablet, change *tmutils.SchemaChange) (*tabletmanagerdatapb.SchemaChangeResult, error)
 
+	LockTables(ctx context.Context, tablet *topodatapb.Tablet) error
+
+	UnlockTables(ctx context.Context, tablet *topodatapb.Tablet) error
+
 	// ExecuteFetchAsDba executes a query remotely using the DBA pool.
 	// If usePool is set, a connection pool may be used to make the
 	// query faster. Close() should close the pool in that case.
@@ -121,6 +126,9 @@ type TabletManagerClient interface {
 	// StartSlave starts the mysql replication
 	StartSlave(ctx context.Context, tablet *topodatapb.Tablet) error
 
+	// StartSlaveUntilAfter starts replication until after the position specified
+	StartSlaveUntilAfter(ctx context.Context, tablet *topodatapb.Tablet, position string, duration time.Duration) error
+
 	// TabletExternallyReparented tells a tablet it is now the master, after an
 	// external tool has already promoted the underlying mysqld to master and
 	// reparented the other mysqld servers to it.
@@ -132,20 +140,9 @@ type TabletManagerClient interface {
 	// GetSlaves returns the addresses of the slaves
 	GetSlaves(ctx context.Context, tablet *topodatapb.Tablet) ([]string, error)
 
-	// WaitBlpPosition asks the tablet to wait until it reaches that
-	// position in replication
-	WaitBlpPosition(ctx context.Context, tablet *topodatapb.Tablet, blpPosition *tabletmanagerdatapb.BlpPosition, waitTime time.Duration) error
-
-	// StopBlp asks the tablet to stop all its binlog players,
-	// and returns the current position for all of them
-	StopBlp(ctx context.Context, tablet *topodatapb.Tablet) ([]*tabletmanagerdatapb.BlpPosition, error)
-
-	// StartBlp asks the tablet to restart its binlog players
-	StartBlp(ctx context.Context, tablet *topodatapb.Tablet) error
-
-	// RunBlpUntil asks the tablet to restart its binlog players until
-	// it reaches the given positions, if not there yet.
-	RunBlpUntil(ctx context.Context, tablet *topodatapb.Tablet, positions []*tabletmanagerdatapb.BlpPosition, waitTime time.Duration) (string, error)
+	// VReplicationExec executes a VReplication command
+	VReplicationExec(ctx context.Context, tablet *topodatapb.Tablet, query string) (*querypb.QueryResult, error)
+	VReplicationWaitForPos(ctx context.Context, tablet *topodatapb.Tablet, id int, pos string) error
 
 	//
 	// Reparenting related functions
@@ -174,6 +171,10 @@ type TabletManagerClient interface {
 	// and it should go read-only and return its current position.
 	DemoteMaster(ctx context.Context, tablet *topodatapb.Tablet) (string, error)
 
+	// UndoDemoteMaster reverts all changes made by DemoteMaster
+	// To be used if we are unable to promote the chosen new master
+	UndoDemoteMaster(ctx context.Context, tablet *topodatapb.Tablet) error
+
 	// PromoteSlaveWhenCaughtUp transforms the tablet from a slave to a master.
 	PromoteSlaveWhenCaughtUp(ctx context.Context, tablet *topodatapb.Tablet, pos string) (string, error)
 
@@ -200,7 +201,7 @@ type TabletManagerClient interface {
 	//
 
 	// Backup creates a database backup
-	Backup(ctx context.Context, tablet *topodatapb.Tablet, concurrency int) (logutil.EventStream, error)
+	Backup(ctx context.Context, tablet *topodatapb.Tablet, concurrency int, allowMaster bool) (logutil.EventStream, error)
 
 	// RestoreFromBackup deletes local data and restores database from backup
 	RestoreFromBackup(ctx context.Context, tablet *topodatapb.Tablet) (logutil.EventStream, error)

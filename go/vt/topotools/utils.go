@@ -23,11 +23,11 @@ import (
 
 	"golang.org/x/net/context"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // FindTabletByHostAndPort searches within a tablet map for tablets.
@@ -37,7 +37,7 @@ func FindTabletByHostAndPort(tabletMap map[string]*topo.TabletInfo, addr, portNa
 			return ti.Alias, nil
 		}
 	}
-	return nil, topo.ErrNoNode
+	return nil, topo.NewError(topo.NoNode, addr+":"+portName)
 }
 
 // GetAllTablets returns a sorted list of tablets.
@@ -94,7 +94,7 @@ func GetAllTabletsAcrossCells(ctx context.Context, ts *topo.Server) ([]*topo.Tab
 		if errors[i] == nil {
 			allTablets = append(allTablets, results[i]...)
 		} else {
-			err = topo.ErrPartialResult
+			err = topo.NewError(topo.PartialResult, "")
 		}
 	}
 	return allTablets, err

@@ -23,13 +23,13 @@ import (
 
 	"math/rand"
 
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/sqlescape"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/sqlescape"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 // TestReaderReadHeartbeat tests that reading a heartbeat sets the appropriate
@@ -49,9 +49,9 @@ func TestReaderReadHeartbeat(t *testing.T) {
 		}},
 	})
 
-	cumulativeLagNs.Set(0)
-	readErrors.Set(0)
-	reads.Set(0)
+	cumulativeLagNs.Reset()
+	readErrors.Reset()
+	reads.Reset()
 
 	tr.readHeartbeat()
 	lag, err := tr.GetLatest()
@@ -81,8 +81,8 @@ func TestReaderReadHeartbeatError(t *testing.T) {
 	tr := newReader(db, mockNowFunc)
 	defer tr.Close()
 
-	cumulativeLagNs.Set(0)
-	readErrors.Set(0)
+	cumulativeLagNs.Reset()
+	readErrors.Reset()
 
 	tr.readHeartbeat()
 	lag, err := tr.GetLatest()
@@ -106,17 +106,13 @@ func newReader(db *fakesqldb.DB, nowFunc func() time.Time) *Reader {
 	config := tabletenv.DefaultQsConfig
 	config.HeartbeatEnable = true
 	config.PoolNamePrefix = fmt.Sprintf("Pool-%d-", randID)
-	dbc := dbconfigs.DBConfigs{
-		App:           *db.ConnParams(),
-		Dba:           *db.ConnParams(),
-		SidecarDBName: "_vt",
-	}
+	dbc := dbconfigs.NewTestDBConfigs(*db.ConnParams(), *db.ConnParams(), "")
 
 	tr := NewReader(&fakeMysqlChecker{}, config)
-	tr.dbName = sqlescape.EscapeID(dbc.SidecarDBName)
+	tr.dbName = sqlescape.EscapeID(dbc.SidecarDBName.Get())
 	tr.keyspaceShard = "test:0"
 	tr.now = nowFunc
-	tr.pool.Open(&dbc.App, &dbc.Dba, &dbc.AppDebug)
+	tr.pool.Open(dbc.AppWithDB(), dbc.DbaWithDB(), dbc.AppDebugWithDB())
 
 	return tr
 }

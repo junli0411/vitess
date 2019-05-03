@@ -19,12 +19,13 @@ package main
 import (
 	"html/template"
 
-	"github.com/youtube/vitess/go/vt/health"
-	"github.com/youtube/vitess/go/vt/servenv"
-	_ "github.com/youtube/vitess/go/vt/status"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletmanager"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver"
+	"vitess.io/vitess/go/vt/health"
+	"vitess.io/vitess/go/vt/servenv"
+	_ "vitess.io/vitess/go/vt/status"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/vttablet/tabletmanager"
+	"vitess.io/vitess/go/vt/vttablet/tabletmanager/vreplication"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver"
 )
 
 var (
@@ -55,10 +56,10 @@ var (
 <table width="100%" border="" frame="">
   <tr border="">
     <td width="25%" border="">
-      Alias: {{github_com_youtube_vitess_vtctld_tablet .Tablet.AliasString}}<br>
-      Keyspace: {{github_com_youtube_vitess_vtctld_keyspace .Tablet.Keyspace}} Shard: {{github_com_youtube_vitess_vtctld_shard .Tablet.Keyspace .Tablet.Shard}} Tablet Type: {{.Tablet.Type}}<br>
-      SrvKeyspace: {{github_com_youtube_vitess_vtctld_srv_keyspace .Tablet.Alias.Cell .Tablet.Keyspace}}<br>
-      Replication graph: {{github_com_youtube_vitess_vtctld_replication .Tablet.Alias.Cell .Tablet.Keyspace .Tablet.Shard}}<br>
+      Alias: {{github_com_vitessio_vitess_vtctld_tablet .Tablet.AliasString}}<br>
+      Keyspace: {{github_com_vitessio_vitess_vtctld_keyspace .Tablet.Keyspace}} Shard: {{github_com_vitessio_vitess_vtctld_shard .Tablet.Keyspace .Tablet.Shard}} Tablet Type: {{.Tablet.Type}}<br>
+      SrvKeyspace: {{github_com_vitessio_vitess_vtctld_srv_keyspace .Tablet.Alias.Cell .Tablet.Keyspace}}<br>
+      Replication graph: {{github_com_vitessio_vitess_vtctld_replication .Tablet.Alias.Cell .Tablet.Keyspace .Tablet.Shard}}<br>
       {{if .BlacklistedTables}}
         BlacklistedTables: {{range .BlacklistedTables}}{{.}} {{end}}<br>
       {{end}}
@@ -95,7 +96,7 @@ var (
 	// healthTemplate is just about the tablet health
 	healthTemplate = `
 <div style="font-size: x-large">Current status: <span style="padding-left: 0.5em; padding-right: 0.5em; padding-bottom: 0.5ex; padding-top: 0.5ex;" class="{{.CurrentClass}}">{{.CurrentHTML}}</span></div>
-<p>Polling health information from {{github_com_youtube_vitess_health_html_name}}. ({{.Config}})</p>
+<p>Polling health information from {{github_com_vitessio_vitess_health_html_name}}. ({{.Config}})</p>
 <h2>Health History</h2>
 <table>
   <tr>
@@ -119,48 +120,6 @@ var (
   <dt><span class="unhealthy">unhealthy</span></dt>
   <dd>will not serve traffic.</dd>
 </dl>
-`
-
-	// binlogTemplate is about the binlog players
-	binlogTemplate = `
-{{if .Controllers}}
-Binlog player state: {{.State}}</br>
-<table>
-  <tr>
-    <th>Index</th>
-    <th>SourceShard</th>
-    <th>State</th>
-    <th>StopPosition</th>
-    <th>LastPosition</th>
-    <th>SecondsBehindMaster</th>
-    <th>Counts</th>
-    <th>Rates</th>
-    <th>Last Error</th>
-  </tr>
-  {{range .Controllers}}
-    <tr>
-      <td>{{.Index}}</td>
-      <td>{{.SourceShardAsHTML}}</td>
-      <td>{{.State}}
-        {{if eq .State "Running"}}
-          {{if .SourceTabletAlias}}
-            (from {{github_com_youtube_vitess_vtctld_tablet .SourceTabletAlias}})
-          {{else}}
-            (picking source tablet)
-          {{end}}
-        {{end}}</td>
-      <td>{{if .StopPosition}}{{.StopPosition}}{{end}}</td>
-      <td>{{.LastPosition}}</td>
-      <td>{{.SecondsBehindMaster}}</td>
-      <td>{{range $key, $value := .Counts}}<b>{{$key}}</b>: {{$value}}<br>{{end}}</td>
-      <td>{{range $key, $values := .Rates}}<b>{{$key}}</b>: {{range $values}}{{.}} {{end}}<br>{{end}}</td>
-      <td>{{.LastError}}</td>
-    </tr>
-  {{end}}
-</table>
-{{else}}
-No binlog player is running.
-{{end}}
 `
 )
 
@@ -201,7 +160,7 @@ func addStatusParts(qsc tabletserver.Controller) {
 		}
 	})
 	servenv.AddStatusFuncs(template.FuncMap{
-		"github_com_youtube_vitess_health_html_name": healthHTMLName,
+		"github_com_vitessio_vitess_health_html_name": healthHTMLName,
 	})
 	servenv.AddStatusPart("Health", healthTemplate, func() interface{} {
 		latest, _ := agent.History.Latest().(*tabletmanager.HealthRecord)
@@ -212,9 +171,7 @@ func addStatusParts(qsc tabletserver.Controller) {
 		}
 	})
 	qsc.AddStatusPart()
-	servenv.AddStatusPart("Binlog Player", binlogTemplate, func() interface{} {
-		return agent.BinlogPlayerMap.Status()
-	})
+	vreplication.AddStatusPart()
 	if onStatusRegistered != nil {
 		onStatusRegistered()
 	}

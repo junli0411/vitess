@@ -21,15 +21,16 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/ioutil"
 	"strconv"
 
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/key"
+	"vitess.io/vitess/go/vt/vterrors"
 )
 
 var (
-	_ Functional = (*NumericStaticMap)(nil)
+	_ Vindex = (*NumericStaticMap)(nil)
 )
 
 // NumericLookupTable stores the mapping of keys.
@@ -74,6 +75,16 @@ func (*NumericStaticMap) Cost() int {
 	return 1
 }
 
+// IsUnique returns true since the Vindex is unique.
+func (vind *NumericStaticMap) IsUnique() bool {
+	return true
+}
+
+// IsFunctional returns true since the Vindex is functional.
+func (vind *NumericStaticMap) IsFunctional() bool {
+	return true
+}
+
 // Verify returns true if ids and ksids match.
 func (vind *NumericStaticMap) Verify(_ VCursor, ids []sqltypes.Value, ksids [][]byte) ([]bool, error) {
 	out := make([]bool, len(ids))
@@ -81,25 +92,25 @@ func (vind *NumericStaticMap) Verify(_ VCursor, ids []sqltypes.Value, ksids [][]
 		var keybytes [8]byte
 		num, err := sqltypes.ToUint64(ids[i])
 		if err != nil {
-			return nil, fmt.Errorf("NumericStaticMap.Verify: %v", err)
+			return nil, vterrors.Wrap(err, "NumericStaticMap.Verify")
 		}
 		lookupNum, ok := vind.lookup[num]
 		if ok {
 			num = lookupNum
 		}
 		binary.BigEndian.PutUint64(keybytes[:], num)
-		out[i] = (bytes.Compare(keybytes[:], ksids[i]) == 0)
+		out[i] = bytes.Equal(keybytes[:], ksids[i])
 	}
 	return out, nil
 }
 
-// Map returns the associated keyspace ids for the given ids.
-func (vind *NumericStaticMap) Map(_ VCursor, ids []sqltypes.Value) ([]KsidOrRange, error) {
-	out := make([]KsidOrRange, 0, len(ids))
+// Map can map ids to key.Destination objects.
+func (vind *NumericStaticMap) Map(cursor VCursor, ids []sqltypes.Value) ([]key.Destination, error) {
+	out := make([]key.Destination, 0, len(ids))
 	for _, id := range ids {
 		num, err := sqltypes.ToUint64(id)
 		if err != nil {
-			out = append(out, KsidOrRange{})
+			out = append(out, key.DestinationNone{})
 			continue
 		}
 		lookupNum, ok := vind.lookup[num]
@@ -108,7 +119,7 @@ func (vind *NumericStaticMap) Map(_ VCursor, ids []sqltypes.Value) ([]KsidOrRang
 		}
 		var keybytes [8]byte
 		binary.BigEndian.PutUint64(keybytes[:], num)
-		out = append(out, KsidOrRange{ID: keybytes[:]})
+		out = append(out, key.DestinationKeyspaceID(keybytes[:]))
 	}
 	return out, nil
 }

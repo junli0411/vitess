@@ -17,7 +17,7 @@
 # This is an example script that stops the mysqld and vttablet instances
 # created by vttablet-up.sh
 
-cell='test'
+cell=${CELL:-'test'}
 uid_base=${UID_BASE:-'100'}
 
 script_root=`dirname "${BASH_SOURCE}"`
@@ -25,7 +25,7 @@ source $script_root/env.sh
 
 # Stop 3 vttablets by default.
 # Pass a list of UID indices on the command line to override.
-uids=${@:-'0 1 2 3 4'}
+uids=${@:-'0 1 2'}
 
 wait_pids=''
 
@@ -41,7 +41,6 @@ for uid_index in $uids; do
 
   echo "Stopping MySQL for tablet $alias..."
   $VTROOT/bin/mysqlctl \
-    -db-config-dba-uname vt_dba \
     -tablet_uid $uid \
     shutdown &
 done

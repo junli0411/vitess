@@ -24,7 +24,7 @@ import (
 	"golang.org/x/net/context"
 
 	"github.com/hashicorp/consul/api"
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo"
 )
 
 var (
@@ -41,7 +41,7 @@ func (s *Server) Watch(ctx context.Context, filePath string) (*topo.WatchData, <
 	}
 	if pair == nil {
 		// Node doesn't exist.
-		return &topo.WatchData{Err: topo.ErrNoNode}, nil, nil
+		return &topo.WatchData{Err: topo.NewError(topo.NoNode, nodePath)}, nil, nil
 	}
 
 	// Initial value to return.
@@ -80,7 +80,7 @@ func (s *Server) Watch(ctx context.Context, filePath string) (*topo.WatchData, <
 			// If the node disappeared, pair is nil.
 			if pair == nil {
 				notifications <- &topo.WatchData{
-					Err: topo.ErrNoNode,
+					Err: topo.NewError(topo.NoNode, nodePath),
 				}
 				return
 			}
@@ -97,7 +97,7 @@ func (s *Server) Watch(ctx context.Context, filePath string) (*topo.WatchData, <
 			select {
 			case <-watchCtx.Done():
 				notifications <- &topo.WatchData{
-					Err: convertError(watchCtx.Err()),
+					Err: convertError(watchCtx.Err(), nodePath),
 				}
 				return
 			default:

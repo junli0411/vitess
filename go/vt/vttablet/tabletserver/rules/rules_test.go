@@ -24,12 +24,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/planbuilder"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/planbuilder"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 func TestQueryRules(t *testing.T) {
@@ -276,8 +276,10 @@ func TestQueryRule(t *testing.T) {
 func TestBindVarStruct(t *testing.T) {
 	qr := NewQueryRule("rule 1", "r1", QRFail)
 
-	var err error
-	err = qr.AddBindVarCond("b", false, true, QRNoOp, nil)
+	err := qr.AddBindVarCond("b", false, true, QRNoOp, nil)
+	if err != nil {
+		t.Errorf("unexpected: %v", err)
+	}
 	err = qr.AddBindVarCond("a", true, false, QRNoOp, nil)
 	if err != nil {
 		t.Errorf("unexpected: %v", err)
@@ -508,7 +510,7 @@ func TestAction(t *testing.T) {
 	if desc != "rule 2" {
 		t.Errorf("want rule 2, got %s", desc)
 	}
-	action, desc = qrs.GetAction("1234", "user1", bv)
+	action, _ = qrs.GetAction("1234", "user1", bv)
 	if action != QRContinue {
 		t.Errorf("want continue")
 	}

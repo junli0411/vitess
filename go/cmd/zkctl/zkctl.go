@@ -23,10 +23,10 @@ import (
 	"fmt"
 	"os"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/exit"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/zkctl"
+	"vitess.io/vitess/go/exit"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/zkctl"
 )
 
 var usage = `
@@ -48,7 +48,7 @@ func init() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, usage)
+		fmt.Fprint(os.Stderr, usage)
 	}
 	stdin = bufio.NewReader(os.Stdin)
 }

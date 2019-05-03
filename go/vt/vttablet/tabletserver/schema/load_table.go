@@ -22,14 +22,13 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/connpool"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/connpool"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
-
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 // LoadTable creates a Table from the schema info in the database.
@@ -88,7 +87,7 @@ func fetchColumns(ta *Table, conn *connpool.DBConn, sqlTableName string) error {
 			}
 			if len(r.Rows) != 1 || len(r.Rows[0]) != 1 {
 				// This code is unreachable.
-				return fmt.Errorf("Invalid rows returned from %s: %v", query, r.Rows)
+				return fmt.Errorf("invalid rows returned from %s: %v", query, r.Rows)
 			}
 			// overwrite the original value with the new one.
 			row[4] = r.Rows[0][0]
@@ -220,7 +219,7 @@ func loadMessageInfo(ta *Table, comment string) error {
 func getDuration(in map[string]string, key string) (time.Duration, error) {
 	sv := in[key]
 	if sv == "" {
-		return 0, fmt.Errorf("Attribute %s not specified for message table", key)
+		return 0, fmt.Errorf("attribute %s not specified for message table", key)
 	}
 	v, err := strconv.ParseFloat(sv, 64)
 	if err != nil {
@@ -232,7 +231,7 @@ func getDuration(in map[string]string, key string) (time.Duration, error) {
 func getNum(in map[string]string, key string) (int, error) {
 	sv := in[key]
 	if sv == "" {
-		return 0, fmt.Errorf("Attribute %s not specified for message table", key)
+		return 0, fmt.Errorf("attribute %s not specified for message table", key)
 	}
 	v, err := strconv.Atoi(sv)
 	if err != nil {

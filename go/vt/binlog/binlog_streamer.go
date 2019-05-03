@@ -22,22 +22,22 @@ import (
 	"io"
 	"strings"
 
-	log "github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
 
-	binlogdatapb "github.com/youtube/vitess/go/vt/proto/binlogdata"
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 var (
-	binlogStreamerErrors = stats.NewCounters("BinlogStreamerErrors")
+	binlogStreamerErrors = stats.NewCountersWithSingleLabel("BinlogStreamerErrors", "error count when streaming binlog", "state")
 
 	// ErrClientEOF is returned by Streamer if the stream ended because the
 	// consumer of the stream indicated it doesn't want any more events.
@@ -335,6 +335,21 @@ func (bls *Streamer) parseEvents(ctx context.Context, events <-chan mysql.Binlog
 		}
 
 		switch {
+		case ev.IsPseudo():
+			gtid, _, err = ev.GTID(format)
+			if err != nil {
+				return pos, fmt.Errorf("can't get GTID from binlog event: %v, event data: %#v", err, ev)
+			}
+			oldpos := pos
+			pos = mysql.AppendGTID(pos, gtid)
+			// If the event is received outside of a transaction, it must
+			// be sent. Otherwise, it will get lost and the targets will go out
+			// of sync.
+			if autocommit && !pos.Equal(oldpos) {
+				if err = commit(ev.Timestamp()); err != nil {
+					return pos, err
+				}
+			}
 		case ev.IsGTID(): // GTID_EVENT: update current GTID, maybe BEGIN.
 			var hasBegin bool
 			gtid, hasBegin, err = ev.GTID(format)
@@ -610,7 +625,7 @@ func (bls *Streamer) appendInserts(statements []FullBinlogStatement, tce *tableC
 
 		statement := &binlogdatapb.BinlogTransaction_Statement{
 			Category: binlogdatapb.BinlogTransaction_Statement_BL_INSERT,
-			Sql:      sql.Bytes(),
+			Sql:      []byte(sql.String()),
 		}
 		statements = append(statements, FullBinlogStatement{
 			Statement:  statement,
@@ -653,7 +668,7 @@ func (bls *Streamer) appendUpdates(statements []FullBinlogStatement, tce *tableC
 
 		update := &binlogdatapb.BinlogTransaction_Statement{
 			Category: binlogdatapb.BinlogTransaction_Statement_BL_UPDATE,
-			Sql:      sql.Bytes(),
+			Sql:      []byte(sql.String()),
 		}
 		statements = append(statements, FullBinlogStatement{
 			Statement:  update,
@@ -689,7 +704,7 @@ func (bls *Streamer) appendDeletes(statements []FullBinlogStatement, tce *tableC
 
 		statement := &binlogdatapb.BinlogTransaction_Statement{
 			Category: binlogdatapb.BinlogTransaction_Statement_BL_DELETE,
-			Sql:      sql.Bytes(),
+			Sql:      []byte(sql.String()),
 		}
 		statements = append(statements, FullBinlogStatement{
 			Statement:  statement,

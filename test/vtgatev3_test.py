@@ -25,6 +25,7 @@ import urllib
 import environment
 import keyspace_util
 import utils
+from protocols_flavor import protocols_flavor
 
 from vtdb import dbexceptions
 from vtdb import vtgate_cursor
@@ -663,6 +664,49 @@ class TestVTGateFunctions(unittest.TestCase):
         ([(1, 'test 1')], 1L, 0,
          [('Id', self.int_type), ('Name', self.string_type)]))
 
+    # test directive timeout
+    try:
+      cursor.execute('SELECT /*vt+ QUERY_TIMEOUT_MS=10 */ SLEEP(1)', {})
+      self.fail('Execute went through')
+    except dbexceptions.DatabaseError as e:
+      s = str(e)
+      self.assertIn(protocols_flavor().rpc_timeout_message(), s)
+
+    # test directive timeout longer than the query time
+    cursor.execute('SELECT /*vt+ QUERY_TIMEOUT_MS=2000 */ SLEEP(1)', {})
+    self.assertEqual(
+        (cursor.fetchall(), cursor.rowcount, cursor.lastrowid,
+         cursor.description),
+        ([(0,)], 1L, 0,
+         [(u'SLEEP(1)', self.int_type)]))
+
+    # test shard errors as warnings directive
+    cursor.execute('SELECT /*vt+ SCATTER_ERRORS_AS_WARNINGS */ bad from vt_user', {})
+    print vtgate_conn.get_warnings()
+    warnings = vtgate_conn.get_warnings()
+    self.assertEqual(len(warnings), 2)
+    for warning in warnings:
+        self.assertEqual(warning.code, 1054)
+        self.assertIn('errno 1054', warning.message)
+        self.assertIn('Unknown column', warning.message)
+    self.assertEqual(
+        (cursor.fetchall(), cursor.rowcount, cursor.lastrowid,
+         cursor.description),
+        ([], 0L, 0, []))
+
+    # test shard errors as warnings directive with timeout
+    cursor.execute('SELECT /*vt+ SCATTER_ERRORS_AS_WARNINGS QUERY_TIMEOUT_MS=10 */ SLEEP(1)', {})
+    print vtgate_conn.get_warnings()
+    warnings = vtgate_conn.get_warnings()
+    self.assertEqual(len(warnings), 1)
+    for warning in warnings:
+        self.assertEqual(warning.code, 1317)
+        self.assertIn('context deadline exceeded', warning.message)
+    self.assertEqual(
+        (cursor.fetchall(), cursor.rowcount, cursor.lastrowid,
+         cursor.description),
+        ([], 0L, 0, []))
+
     # Test insert with no auto-inc
     vtgate_conn.begin()
     result = self.execute_on_master(
@@ -894,7 +938,7 @@ class TestVTGateFunctions(unittest.TestCase):
         {'id': 3})
     vtgate_conn.commit()
 
-    # Test multi shard delete
+    # Test scatter delete
     vtgate_conn.begin()
     result = self.execute_on_master(
         vtgate_conn,
@@ -905,6 +949,20 @@ class TestVTGateFunctions(unittest.TestCase):
         vtgate_conn,
         'delete from vt_user where id > :id',
         {'id': 20})
+    self.assertEqual(result, ([], 2L, 0L, []))
+    vtgate_conn.commit()
+
+    # Test scatter update
+    vtgate_conn.begin()
+    result = self.execute_on_master(
+        vtgate_conn,
+        'insert into vt_user (id, name) values (:id0, :name0),(:id1, :name1)',
+        {'id0': 22, 'name0': 'name2', 'id1': 33, 'name1': 'name2'})
+    self.assertEqual(result, ([], 2L, 0L, []))
+    result = self.execute_on_master(
+        vtgate_conn,
+        'update vt_user set name=:name where id > :id',
+        {'id': 20, 'name': 'jose'})
     self.assertEqual(result, ([], 2L, 0L, []))
     vtgate_conn.commit()
 
@@ -943,6 +1001,7 @@ class TestVTGateFunctions(unittest.TestCase):
         keyspace_name='user'
     )
     vtgate_conn.commit()
+    lookup_master.mquery('vt_lookup', 'truncate name_user2_map')
     self.assertEqual(result, ([], 0L, 0L, []))
     # Test select by id
     result = self.execute_on_master(
@@ -1030,6 +1089,85 @@ class TestVTGateFunctions(unittest.TestCase):
         'delete from  vt_user_extra where user_id = :user_id',
         {'user_id': 3})
     vtgate_conn.commit()
+
+  def test_user_scatter_limit(self):
+    vtgate_conn = get_connection()
+    # Works when there is no data
+    result = self.execute_on_master(
+        vtgate_conn,
+        'select id from vt_user2 order by id limit :limit offset :offset ', {'limit': 4, 'offset': 1})
+    self.assertEqual(
+        result, ([], 0L, 0, [('id', self.int_type)]))
+
+    vtgate_conn.begin()
+    result = self.execute_on_master(
+        vtgate_conn,
+        'insert into vt_user2 (id, name) values (:id0, :name0),(:id1, :name1),(:id2, :name2), (:id3, :name3), (:id4, :name4)',
+        {
+          'id0': 1, 'name0': 'name0',
+          'id1': 2, 'name1': 'name1',
+          'id2': 3, 'name2': 'name2',
+          'id3': 4, 'name3': 'name3',
+          'id4': 5, 'name4': 'name4',
+        }
+    )
+    self.assertEqual(result, ([], 5L, 0L, []))
+    vtgate_conn.commit()
+    # Assert that rows are in multiple shards
+    result = shard_0_master.mquery('vt_user', 'select id, name from vt_user2')
+    self.assertEqual(result, ((1L, 'name0'), (2L, 'name1'), (3L, 'name2'), (5L, 'name4')))
+    result = shard_1_master.mquery('vt_user', 'select id, name from vt_user2')
+    self.assertEqual(result, ((4L, 'name3'),))
+
+    # Works when limit is set
+    result = self.execute_on_master(
+      vtgate_conn,
+      'select id from vt_user2 order by id limit :limit', {'limit': 2 })
+    self.assertEqual(
+        result,
+        ([(1,),(2,),], 2L, 0,
+         [('id', self.int_type)]))
+
+
+    # Fetching with offset works
+    count = 4
+    for x in xrange(count):
+      i = x+1
+      result = self.execute_on_master(
+        vtgate_conn,
+        'select id from vt_user2 order by id limit :limit offset :offset ', {'limit': 1, 'offset': x})
+      self.assertEqual(
+        result,
+        ([(i,)], 1L, 0,
+         [('id', self.int_type)]))
+
+    # Works when limit is greater than values in the table
+    result = self.execute_on_master(
+      vtgate_conn,
+      'select id from vt_user2 order by id limit :limit offset :offset ', {'limit': 100, 'offset': 1})
+    self.assertEqual(
+        result,
+        ([(2,),(3,),(4,),(5,)], 4L, 0,
+         [('id', self.int_type)]))
+
+    # Works without bind vars
+    result = self.execute_on_master(
+      vtgate_conn,
+      'select id from vt_user2 order by id limit 1 offset 1', {})
+    self.assertEqual(
+        result,
+        ([(2,)], 1L, 0,
+         [('id', self.int_type)]))
+
+    vtgate_conn.begin()
+    result = vtgate_conn._execute(
+        'truncate vt_user2',
+        {},
+        tablet_type='master',
+        keyspace_name='user'
+    )
+    vtgate_conn.commit()
+    lookup_master.mquery('vt_lookup', 'truncate name_user2_map')
 
   def test_user_extra2(self):
     # user_extra2 is for testing updates to secondary vindexes
@@ -1542,7 +1680,7 @@ class TestVTGateFunctions(unittest.TestCase):
         [(1, 1, 1, 1), (3, 3, 3, 0), (4, 4, 4, 0),
          (5, 5, 5, 5), (6, 6, 6, 6), (7, 7, 7, 7)])
 
-  def test_joins(self):
+  def test_joins_subqueries(self):
     vtgate_conn = get_connection()
     vtgate_conn.begin()
     self.execute_on_master(
@@ -1650,6 +1788,20 @@ class TestVTGateFunctions(unittest.TestCase):
          [('id', self.int_type),
           ('name', self.string_type),
           ('info', self.string_type)]))
+
+    # test a cross-shard subquery
+    result = self.execute_on_master(
+        vtgate_conn,
+        'select id, name from join_user '
+        'where id in (select user_id from join_user_extra)',
+        {})
+    self.assertEqual(
+        result,
+        ([(1L, 'name1')],
+         1,
+         0,
+         [('id', self.int_type),
+          ('name', self.string_type)]))
     vtgate_conn.begin()
     self.execute_on_master(
         vtgate_conn,
@@ -1691,6 +1843,20 @@ class TestVTGateFunctions(unittest.TestCase):
          0,
          [('id', self.varbinary_type),
           ('keyspace_id', self.varbinary_type)]))
+
+  def test_analyze_table(self):
+    vtgate_conn = get_connection()
+    self.execute_on_master(
+        vtgate_conn,
+        'use user',
+        {})
+    result = self.execute_on_master(
+        vtgate_conn,
+        'analyze table vt_user',
+        {})
+    self.assertEqual(
+        result[0],
+        [('vt_user.vt_user', 'analyze', 'status', 'OK')])
 
   def test_transaction_modes(self):
     vtgate_conn = get_connection()

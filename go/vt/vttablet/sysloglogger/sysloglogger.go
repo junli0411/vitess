@@ -18,12 +18,13 @@ limitations under the License.
 package sysloglogger
 
 import (
+	"bytes"
 	"flag"
 	"log/syslog"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 )
 
 // syslogWriter is an interface that wraps syslog.Writer, so it can be mocked in unit tests.
@@ -73,7 +74,12 @@ func run() {
 			log.Errorf("Unexpected value in query logs: %#v (expecting value of type %T)", out, &tabletenv.LogStats{})
 			continue
 		}
-		if err := writer.Info(stats.Format(formatParams)); err != nil {
+		var b bytes.Buffer
+		if err := stats.Logf(&b, formatParams); err != nil {
+			log.Errorf("Error formatting logStats: %v", err)
+			continue
+		}
+		if err := writer.Info(b.String()); err != nil {
 			log.Errorf("Error writing to syslog: %v", err)
 			continue
 		}

@@ -53,6 +53,15 @@ class MariaDB(MysqlFlavor):
     ]
     return ":".join(files)
 
+class MariaDB103(MysqlFlavor):
+  """Overrides specific to MariaDB 10.3"""
+
+  def my_cnf(self):
+    files = [
+      os.path.join(vttop, "config/mycnf/default-fast.cnf"),
+      os.path.join(vttop, "config/mycnf/master_mariadb103.cnf"),
+    ]
+    return ":".join(files)
 
 class MySQL56(MysqlFlavor):
   """Overrides specific to MySQL 5.6."""
@@ -64,6 +73,15 @@ class MySQL56(MysqlFlavor):
     ]
     return ":".join(files)
 
+class MySQL80(MysqlFlavor):
+  """Overrides specific to MySQL 8.0."""
+
+  def my_cnf(self):
+    files = [
+        os.path.join(vttop, "config/mycnf/default-fast.cnf"),
+        os.path.join(vttop, "config/mycnf/master_mysql80.cnf"),
+    ]
+    return ":".join(files)
 
 __mysql_flavor = None
 
@@ -89,6 +107,10 @@ def set_mysql_flavor(flavor):
 
   if flavor == "MariaDB":
     __mysql_flavor = MariaDB()
+  elif flavor == "MariaDB103":
+    __mysql_flavor = MariaDB103()
+  elif flavor == "MySQL80":
+    __mysql_flavor = MySQL80()
   elif flavor == "MySQL56":
     __mysql_flavor = MySQL56()
   else:

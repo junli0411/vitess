@@ -17,9 +17,11 @@ limitations under the License.
 package worker
 
 import (
-	"github.com/youtube/vitess/go/sqltypes"
+	"context"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	"vitess.io/vitess/go/sqltypes"
+
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 // ResultReader is an advanced version of sqltypes.ResultStream.
@@ -39,4 +41,5 @@ type ResultReader interface {
 	// It returns the next result on the stream.
 	// It will return io.EOF if the stream ended.
 	Next() (*sqltypes.Result, error)
+	Close(ctx context.Context)
 }

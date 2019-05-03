@@ -1,11 +1,11 @@
 # Copyright 2017 Google Inc.
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-# 
+#
 #     http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -120,27 +120,28 @@ install_protoc-gen-go:
 	cp -a vendor/github.com/golang/protobuf $${GOPATH}/src/github.com/golang/
 	go install github.com/golang/protobuf/protoc-gen-go
 
-PROTOC_BINARY := $(shell type -p $(VTROOT)/dist/grpc/usr/local/bin/protoc)
-ifeq (,$(PROTOC_BINARY))
-	PROTOC_BINARY := $(shell which protoc)
-endif
-
-ifneq (,$(PROTOC_BINARY))
-	PROTOC_DIR := $(dir $(PROTOC_BINARY))
+# Find protoc compiler.
+# NOTE: We are *not* using the "protoc" binary (as suggested by the grpc Go
+#       quickstart for example). Instead, we run "protoc" via the Python
+#       wrapper script which is provided by the "grpcio-tools" PyPi package.
+#       (The package includes the compiler as library, but not as binary.
+#       Therefore, we have to use the wrapper script they provide.)
+ifneq ($(wildcard $(VTROOT)/dist/grpc/usr/local/lib/python2.7/site-packages/grpc_tools/protoc.py),)
+# IMPORTANT: The next line must not be indented.
+PROTOC_COMMAND := python -m grpc_tools.protoc
 endif
 
 PROTO_SRCS = $(wildcard proto/*.proto)
 PROTO_SRC_NAMES = $(basename $(notdir $(PROTO_SRCS)))
 PROTO_PY_OUTS = $(foreach name, $(PROTO_SRC_NAMES), py/vtproto/$(name)_pb2.py)
 PROTO_GO_OUTS = $(foreach name, $(PROTO_SRC_NAMES), go/vt/proto/$(name)/$(name).pb.go)
-PROTO_GO_TEMPS = $(foreach name, $(PROTO_SRC_NAMES), go/vt/.proto.tmp/$(name).pb.go)
 
 # This rule rebuilds all the go and python files from the proto definitions for gRPC.
 proto: proto_banner $(PROTO_GO_OUTS) $(PROTO_PY_OUTS)
 
 proto_banner:
-ifeq (,$(PROTOC_DIR))
-	$(error "Cannot find protoc binary. Did bootstrap.sh succeed, and did you execute 'source dev.env'?")
+ifeq (,$(PROTOC_COMMAND))
+	$(error "Cannot find protoc compiler. Did bootstrap.sh succeed, and did you execute 'source dev.env'?")
 endif
 
 ifndef NOBANNER
@@ -148,32 +149,24 @@ ifndef NOBANNER
 endif
 
 $(PROTO_PY_OUTS): py/vtproto/%_pb2.py: proto/%.proto
-	$(PROTOC_DIR)/protoc -Iproto $< --python_out=py/vtproto --grpc_out=py/vtproto --plugin=protoc-gen-grpc=$(PROTOC_DIR)/grpc_python_plugin
+	$(PROTOC_COMMAND) -Iproto $< --python_out=py/vtproto --grpc_python_out=py/vtproto
 
-$(PROTO_GO_OUTS): $(PROTO_GO_TEMPS)
+$(PROTO_GO_OUTS): install_protoc-gen-go proto/*.proto
 	for name in $(PROTO_SRC_NAMES); do \
-		mkdir -p go/vt/proto/$${name}; \
-		cp -a go/vt/.proto.tmp/$${name}.pb.go go/vt/proto/$${name}/$${name}.pb.go; \
+		cd $(VTROOT)/src && PATH=$(VTROOT)/bin:$(PATH) $(VTROOT)/bin/protoc --go_out=plugins=grpc:. -Ivitess.io/vitess/proto vitess.io/vitess/proto/$${name}.proto; \
 	done
-
-$(PROTO_GO_TEMPS): install_protoc-gen-go
-
-$(PROTO_GO_TEMPS): go/vt/.proto.tmp/%.pb.go: proto/%.proto
-	mkdir -p go/vt/.proto.tmp
-	$(PROTOC_DIR)/protoc -Iproto $< --go_out=plugins=grpc:go/vt/.proto.tmp
-	sed -i -e 's,import \([a-z0-9_]*\) ".",import \1 "github.com/youtube/vitess/go/vt/proto/\1",g' $@
 
 # Helper targets for building Docker images.
 # Please read docker/README.md to understand the different available images.
 
 # This rule builds the bootstrap images for all flavors.
-DOCKER_IMAGES_FOR_TEST = mariadb mysql56 mysql57 percona percona57
+DOCKER_IMAGES_FOR_TEST = mariadb mariadb103 mysql56 mysql57 mysql80 percona percona57 percona80
 DOCKER_IMAGES = common $(DOCKER_IMAGES_FOR_TEST)
 docker_bootstrap:
 	for i in $(DOCKER_IMAGES); do echo "building bootstrap image: $$i"; docker/bootstrap/build.sh $$i || exit 1; done
 
 docker_bootstrap_test:
-	flavors='$(DOCKER_IMAGES_FOR_TEST)' && ./test.go -pull=false -parallel=4 -flavor=$${flavors// /,}
+	flavors='$(DOCKER_IMAGES_FOR_TEST)' && ./test.go -pull=false -parallel=2 -flavor=$${flavors// /,}
 
 docker_bootstrap_push:
 	for i in $(DOCKER_IMAGES); do echo "pushing boostrap image: $$i"; docker push vitess/bootstrap:$$i || exit 1; done
@@ -191,9 +184,17 @@ docker_base_mysql56:
 	chmod -R o=g *
 	docker build -f docker/base/Dockerfile.mysql56 -t vitess/base:mysql56 .
 
+docker_base_mysql80:
+	chmod -R o=g *
+	docker build -f docker/base/Dockerfile.mysql80 -t vitess/base:mysql80 .
+
 docker_base_mariadb:
 	chmod -R o=g *
 	docker build -f docker/base/Dockerfile.mariadb -t vitess/base:mariadb .
+
+docker_base_mariadb103:
+	chmod -R o=g *
+	docker build -f docker/base/Dockerfile.mariadb -t vitess/base:mariadb103 .
 
 docker_base_percona:
 	chmod -R o=g *
@@ -202,6 +203,10 @@ docker_base_percona:
 docker_base_percona57:
 	chmod -R o=g *
 	docker build -f docker/base/Dockerfile.percona57 -t vitess/base:percona57 .
+
+docker_base_percona80:
+	chmod -R o=g *
+	docker build -f docker/base/Dockerfile.percona80 -t vitess/base:percona80 .
 
 # Run "make docker_lite PROMPT_NOTICE=false" to avoid that the script
 # prompts you to press ENTER and confirm that the vitess/base image is not
@@ -212,14 +217,29 @@ docker_lite:
 docker_lite_mysql56:
 	cd docker/lite && ./build.sh --prompt=$(PROMPT_NOTICE) mysql56
 
+docker_lite_mysql57:
+	cd docker/lite && ./build.sh --prompt=$(PROMPT_NOTICE) mysql57
+
+docker_lite_mysql80:
+	cd docker/lite && ./build.sh --prompt=$(PROMPT_NOTICE) mysql80
+
 docker_lite_mariadb:
 	cd docker/lite && ./build.sh --prompt=$(PROMPT_NOTICE) mariadb
+
+docker_lite_mariadb103:
+	cd docker/lite && ./build.sh --prompt=$(PROMPT_NOTICE) mariadb103
 
 docker_lite_percona:
 	cd docker/lite && ./build.sh --prompt=$(PROMPT_NOTICE) percona
 
 docker_lite_percona57:
 	cd docker/lite && ./build.sh --prompt=$(PROMPT_NOTICE) percona57
+
+docker_lite_percona80:
+	cd docker/lite && ./build.sh --prompt=$(PROMPT_NOTICE) percona80
+
+docker_lite_alpine:
+	cd docker/lite && ./build.sh --prompt=$(PROMPT_NOTICE) alpine
 
 docker_guestbook:
 	cd examples/kubernetes/guestbook && ./build.sh
@@ -240,4 +260,19 @@ docker_unit_test:
 # tests in Travis. The results are saved in test/config.json, which you can
 # then commit and push.
 rebalance_tests:
-	go run test.go -rebalance 5 -remote-stats http://enisoc.com:15123/travis/stats
+	go run test.go -rebalance 5
+
+# Release a version.
+# This will generate a tar.gz file into the releases folder with the current source
+# as well as the vendored libs.
+release: docker_base
+	@if [ -z "$VERSION" ]; then \
+	  echo "Set the env var VERSION with the release version"; exit 1;\
+	fi
+	mkdir -p releases
+	docker build -f docker/Dockerfile.release -t vitess/release .
+	docker run -v ${PWD}/releases:/vt/releases --env VERSION=$(VERSION) vitess/release
+	git tag -m Version\ $(VERSION) v$(VERSION)
+	echo "A git tag was created, you can push it with:"
+	echo "git push origin v$(VERSION)"
+	echo "Also, don't forget the upload releases/v$(VERSION).tar.gz file to GitHub releases"

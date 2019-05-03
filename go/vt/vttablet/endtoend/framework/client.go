@@ -19,14 +19,14 @@ package framework
 import (
 	"errors"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/callerid"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/callerid"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 // QueryClient provides a convenient wrapper for TabletServer's query service.
@@ -188,6 +188,7 @@ func (client *QueryClient) StreamExecuteWithOptions(query string, bindvars map[s
 		&client.target,
 		query,
 		bindvars,
+		0,
 		options,
 		func(res *sqltypes.Result) error {
 			if result.Fields == nil {
@@ -211,6 +212,7 @@ func (client *QueryClient) Stream(query string, bindvars map[string]*querypb.Bin
 		&client.target,
 		query,
 		bindvars,
+		0,
 		&querypb.ExecuteOptions{IncludedFields: querypb.ExecuteOptions_ALL},
 		sendFunc,
 	)

@@ -22,17 +22,19 @@ import (
 	"net/http"
 	"time"
 
+	"vitess.io/vitess/go/vt/vterrors"
+
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/vtgate/fakerpcvtgateconn"
-	"github.com/youtube/vitess/go/vt/vtgate/vtgateconn"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/vtgate/fakerpcvtgateconn"
+	"vitess.io/vitess/go/vt/vtgate/vtgateconn"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 var (
@@ -49,7 +51,7 @@ var (
 // StartServer starts the server and initializes
 // all the global variables. This function should only be called
 // once at the beginning of the test.
-func StartServer(connParams, connAppDebugParams mysql.ConnParams) error {
+func StartServer(connParams, connAppDebugParams mysql.ConnParams, dbName string) error {
 	// Setup a fake vtgate server.
 	protocol := "resolveTest"
 	*vtgateconn.VtgateProtocol = protocol
@@ -59,11 +61,7 @@ func StartServer(connParams, connAppDebugParams mysql.ConnParams) error {
 		}, nil
 	})
 
-	dbcfgs := dbconfigs.DBConfigs{
-		App:           connParams,
-		AppDebug:      connAppDebugParams,
-		SidecarDBName: "_vt",
-	}
+	dbcfgs := dbconfigs.NewTestDBConfigs(connParams, connAppDebugParams, dbName)
 
 	config := tabletenv.DefaultQsConfig
 	config.EnableAutoCommit = true
@@ -83,13 +81,13 @@ func StartServer(connParams, connAppDebugParams mysql.ConnParams) error {
 	Server.Register()
 	err := Server.StartService(Target, dbcfgs)
 	if err != nil {
-		return fmt.Errorf("could not start service: %v", err)
+		return vterrors.Wrap(err, "could not start service")
 	}
 
 	// Start http service.
 	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
-		return fmt.Errorf("could not start listener: %v", err)
+		return vterrors.Wrap(err, "could not start listener")
 	}
 	ServerAddress = fmt.Sprintf("http://%s", ln.Addr().String())
 	go http.Serve(ln, nil)

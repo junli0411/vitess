@@ -17,10 +17,10 @@ limitations under the License.
 package sqlparser
 
 import (
-	"bytes"
+	"strings"
 	"testing"
 
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sqltypes"
 )
 
 func TestEncodable(t *testing.T) {
@@ -64,7 +64,7 @@ func TestEncodable(t *testing.T) {
 		out: "(pk1 = 1 and pk2 = 'aa') or (pk1 = 2 and pk2 = 'bb')",
 	}}
 	for _, tcase := range tcases {
-		buf := new(bytes.Buffer)
+		buf := new(strings.Builder)
 		tcase.in.EncodeSQL(buf)
 		if out := buf.String(); out != tcase.out {
 			t.Errorf("EncodeSQL(%v): %s, want %s", tcase.in, out, tcase.out)

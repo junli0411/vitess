@@ -25,8 +25,8 @@ import (
 
 	"golang.org/x/net/context"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
 )
 
 // TestCreateShard tests a few cases for topo.CreateShard
@@ -77,7 +77,7 @@ func TestCreateShardCustomSharding(t *testing.T) {
 	if si, err := ts.GetShard(ctx, keyspace, shard0); err != nil {
 		t.Fatalf("GetShard(shard0) failed: %v", err)
 	} else {
-		if len(si.ServedTypes) != 3 {
+		if !si.IsMasterServing {
 			t.Fatalf("shard0 should have all 3 served types")
 		}
 	}
@@ -90,7 +90,7 @@ func TestCreateShardCustomSharding(t *testing.T) {
 	if si, err := ts.GetShard(ctx, keyspace, shard1); err != nil {
 		t.Fatalf("GetShard(shard1) failed: %v", err)
 	} else {
-		if len(si.ServedTypes) != 3 {
+		if !si.IsMasterServing {
 			t.Fatalf("shard1 should have all 3 served types")
 		}
 	}

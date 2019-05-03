@@ -22,10 +22,10 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/topo"
 
-	vschemapb "github.com/youtube/vitess/go/vt/proto/vschema"
+	vschemapb "vitess.io/vitess/go/vt/proto/vschema"
 )
 
 // RebuildVSchema rebuilds the SrvVSchema for the provided cell list
@@ -59,7 +59,7 @@ func RebuildVSchema(ctx context.Context, log logutil.Logger, ts *topo.Server, ce
 			defer wg.Done()
 
 			k, err := ts.GetVSchema(ctx, keyspace)
-			if err == topo.ErrNoNode {
+			if topo.IsErrType(err, topo.NoNode) {
 				err = nil
 				k = &vschemapb.Keyspace{}
 			}
@@ -67,7 +67,7 @@ func RebuildVSchema(ctx context.Context, log logutil.Logger, ts *topo.Server, ce
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				log.Errorf("GetVSchema(%v) failed: %v", keyspace, err)
+				log.Errorf2(err, "GetVSchema(%v) failed", keyspace)
 				finalErr = err
 				return
 			}
@@ -79,13 +79,19 @@ func RebuildVSchema(ctx context.Context, log logutil.Logger, ts *topo.Server, ce
 		return finalErr
 	}
 
+	rr, err := ts.GetRoutingRules(ctx)
+	if err != nil {
+		return fmt.Errorf("GetRoutingRules failed: %v", err)
+	}
+	srvVSchema.RoutingRules = rr
+
 	// now save the SrvVSchema in all cells in parallel
 	for _, cell := range cells {
 		wg.Add(1)
 		go func(cell string) {
 			defer wg.Done()
 			if err := ts.UpdateSrvVSchema(ctx, cell, srvVSchema); err != nil {
-				log.Errorf("UpdateSrvVSchema(%v) failed: %v", cell, err)
+				log.Errorf2(err, "UpdateSrvVSchema(%v) failed", cell)
 				mu.Lock()
 				finalErr = err
 				mu.Unlock()

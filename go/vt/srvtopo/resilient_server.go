@@ -24,14 +24,14 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vschemapb "github.com/youtube/vitess/go/vt/proto/vschema"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vschemapb "vitess.io/vitess/go/vt/proto/vschema"
 )
 
 var (
@@ -80,10 +80,10 @@ const (
   </tr>
   {{range $i, $skn := .SrvKeyspaceNames}}
   <tr>
-    <td>{{github_com_youtube_vitess_vtctld_srv_cell $skn.Cell}}</td>
-    <td>{{range $j, $value := $skn.Value}}{{github_com_youtube_vitess_vtctld_srv_keyspace $skn.Cell $value}}&nbsp;{{end}}</td>
-    <td>{{github_com_youtube_vitess_srvtopo_ttl_time $skn.ExpirationTime}}</td>
-    <td>{{if $skn.LastError}}({{github_com_youtube_vitess_srvtopo_time_since $skn.LastQueryTime}}Ago) {{$skn.LastError}}{{end}}</td>
+    <td>{{github_com_vitessio_vitess_vtctld_srv_cell $skn.Cell}}</td>
+    <td>{{range $j, $value := $skn.Value}}{{github_com_vitessio_vitess_vtctld_srv_keyspace $skn.Cell $value}}&nbsp;{{end}}</td>
+    <td>{{github_com_vitessio_vitess_srvtopo_ttl_time $skn.ExpirationTime}}</td>
+    <td>{{if $skn.LastError}}({{github_com_vitessio_vitess_srvtopo_time_since $skn.LastQueryTime}}Ago) {{$skn.LastError}}{{end}}</td>
   </tr>
   {{end}}
 </table>
@@ -101,11 +101,11 @@ const (
   </tr>
   {{range $i, $sk := .SrvKeyspaces}}
   <tr>
-    <td>{{github_com_youtube_vitess_vtctld_srv_cell $sk.Cell}}</td>
-    <td>{{github_com_youtube_vitess_vtctld_srv_keyspace $sk.Cell $sk.Keyspace}}</td>
+    <td>{{github_com_vitessio_vitess_vtctld_srv_cell $sk.Cell}}</td>
+    <td>{{github_com_vitessio_vitess_vtctld_srv_keyspace $sk.Cell $sk.Keyspace}}</td>
     <td>{{$sk.StatusAsHTML}}</td>
-    <td>{{github_com_youtube_vitess_srvtopo_ttl_time $sk.ExpirationTime}}</td>
-    <td>{{if $sk.LastError}}({{github_com_youtube_vitess_srvtopo_time_since $sk.LastErrorTime}} Ago) {{$sk.LastError}}{{end}}</td>
+    <td>{{github_com_vitessio_vitess_srvtopo_ttl_time $sk.ExpirationTime}}</td>
+    <td>{{if $sk.LastError}}({{github_com_vitessio_vitess_srvtopo_time_since $sk.LastErrorTime}} Ago) {{$sk.LastError}}{{end}}</td>
   </tr>
   {{end}}
 </table>
@@ -120,7 +120,7 @@ type ResilientServer struct {
 	topoServer   *topo.Server
 	cacheTTL     time.Duration
 	cacheRefresh time.Duration
-	counts       *stats.Counters
+	counts       *stats.CountersWithSingleLabel
 
 	// mutex protects the cache map itself, not the individual
 	// values in the cache.
@@ -215,11 +215,16 @@ func NewResilientServer(base *topo.Server, counterPrefix string) *ResilientServe
 		topoServer:   base,
 		cacheTTL:     *srvTopoCacheTTL,
 		cacheRefresh: *srvTopoCacheRefresh,
-		counts:       stats.NewCounters(counterPrefix + "Counts"),
+		counts:       stats.NewCountersWithSingleLabel(counterPrefix+"Counts", "Resilient srvtopo server operations", "type"),
 
 		srvKeyspaceNamesCache: make(map[string]*srvKeyspaceNamesEntry),
 		srvKeyspaceCache:      make(map[string]*srvKeyspaceEntry),
 	}
+}
+
+// GetTopoServer returns the topo.Server that backs the resilient server.
+func (server *ResilientServer) GetTopoServer() (*topo.Server, error) {
+	return server.topoServer, nil
 }
 
 // GetSrvKeyspaceNames returns all keyspace names for the given cell.
@@ -434,7 +439,7 @@ func (server *ResilientServer) watchSrvKeyspace(callerCtx context.Context, entry
 		entry.lastErrorTime = time.Now()
 
 		// if the node disappears, delete the cached value
-		if current.Err == topo.ErrNoNode {
+		if topo.IsErrType(current.Err, topo.NoNode) {
 			entry.value = nil
 		}
 
@@ -478,7 +483,7 @@ func (server *ResilientServer) watchSrvKeyspace(callerCtx context.Context, entry
 			log.Errorf("%v", err)
 			server.counts.Add(errorCategory, 1)
 			entry.mutex.Lock()
-			if c.Err == topo.ErrNoNode {
+			if topo.IsErrType(c.Err, topo.NoNode) {
 				entry.value = nil
 			}
 			entry.watchState = watchStateIdle
@@ -524,7 +529,7 @@ func (server *ResilientServer) WatchSrvVSchema(ctx context.Context, cell string,
 			}
 			if current.Err != nil {
 				// Don't log if there is no VSchema to start with.
-				if current.Err != topo.ErrNoNode {
+				if !topo.IsErrType(current.Err, topo.NoNode) {
 					log.Warningf("Error watching vschema for cell %s (will wait 5s before retrying): %v", cell, current.Err)
 				}
 			} else {
@@ -710,6 +715,6 @@ func timeSince(t time.Time) template.HTML {
 // We don't register them inside servenv directly so we don't introduce
 // a dependency here.
 var StatusFuncs = template.FuncMap{
-	"github_com_youtube_vitess_srvtopo_ttl_time":   ttlTime,
-	"github_com_youtube_vitess_srvtopo_time_since": timeSince,
+	"github_com_vitessio_vitess_srvtopo_ttl_time":   ttlTime,
+	"github_com_vitessio_vitess_srvtopo_time_since": timeSince,
 }

@@ -22,20 +22,18 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/net/context"
-
 	"github.com/golang/protobuf/proto"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
-	"github.com/youtube/vitess/go/vt/vttablet/grpcqueryservice"
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice"
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice/fakes"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
-	"github.com/youtube/vitess/go/vt/wrangler"
-	"github.com/youtube/vitess/go/vt/wrangler/testlib"
-
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/logutil"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/vttablet/grpcqueryservice"
+	"vitess.io/vitess/go/vt/vttablet/queryservice"
+	"vitess.io/vitess/go/vt/vttablet/queryservice/fakes"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
+	"vitess.io/vitess/go/vt/wrangler"
+	"vitess.io/vitess/go/vt/wrangler/testlib"
 )
 
 // streamHealthTabletServer is a local QueryService implementation to support the tests
@@ -91,7 +89,7 @@ func (s *streamHealthTabletServer) streamHealthUnregister(id int) error {
 }
 
 // BroadcastHealth will broadcast the current health to all listeners
-func (s *streamHealthTabletServer) BroadcastHealth(terTimestamp int64, stats *querypb.RealtimeStats) {
+func (s *streamHealthTabletServer) BroadcastHealth(terTimestamp int64, stats *querypb.RealtimeStats, maxCache time.Duration) {
 	shr := &querypb.StreamHealthResponse{
 		TabletExternallyReparentedTimestamp: terTimestamp,
 		RealtimeStats:                       stats,
@@ -137,7 +135,7 @@ func TestTabletData(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				shsq.BroadcastHealth(42, stats)
+				shsq.BroadcastHealth(42, stats, time.Minute)
 			}
 		}
 	}()

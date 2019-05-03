@@ -19,6 +19,33 @@
 			"RetryMax": 0,
 			"Tags": []
 		},
+		"xtrabackup": {
+			"File": "xtrabackup.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 3,
+			"RetryMax": 0,
+			"Tags": []
+		},
+		"xtrabackup_xbstream": {
+			"File": "xtrabackup_xbstream.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 3,
+			"RetryMax": 0,
+			"Tags": []
+		},
+		"xtrabackup_xtra": {
+			"File": "xtrabackup_xtra.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 3,
+			"RetryMax": 0,
+			"Tags": []
+		},
 		"binlog": {
 			"File": "binlog.py",
 			"Args": [],
@@ -79,23 +106,21 @@
 				"worker_test"
 			]
 		},
+		"initial_sharding_multi": {
+			"File": "initial_sharding_multi.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 3,
+			"RetryMax": 0,
+			"Tags": []
+		},
 		"initial_sharding_bytes": {
 			"File": "initial_sharding_bytes.py",
 			"Args": [],
 			"Command": [],
 			"Manual": false,
 			"Shard": 4,
-			"RetryMax": 0,
-			"Tags": [
-				"worker_test"
-			]
-		},
-		"initial_sharding_l2vtgate": {
-			"File": "initial_sharding_l2vtgate.py",
-			"Args": [],
-			"Command": [],
-			"Manual": false,
-			"Shard": 2,
 			"RetryMax": 0,
 			"Tags": [
 				"worker_test"
@@ -181,14 +206,27 @@
 			"RetryMax": 0,
 			"Tags": []
 		},
-		"master_buffering": {
-			"File": "master_buffering_test.py",
+		"cell_no_aliases": {
+			"File": "cell_no_aliases.py",
 			"Args": [],
 			"Command": [],
 			"Manual": false,
-			"Shard": 4,
+			"Shard": 1,
 			"RetryMax": 0,
-			"Tags": []
+			"Tags": [
+				"site_test"
+			]
+		},
+		"cell_aliases": {
+			"File": "cell_aliases.py",
+			"Args": [],
+			"Command": [],
+			"Manual": false,
+			"Shard": 1,
+			"RetryMax": 0,
+			"Tags": [
+				"site_test"
+			]
 		},
 		"mysql_server": {
 			"File": "mysql_server_test.py",
@@ -430,17 +468,6 @@
 			"Command": [],
 			"Manual": false,
 			"Shard": 2,
-			"RetryMax": 0,
-			"Tags": [
-				"site_test"
-			]
-		},
-		"vtgatev2_l2vtgate": {
-			"File": "vtgatev2_l2vtgate_test.py",
-			"Args": [],
-			"Command": [],
-			"Manual": false,
-			"Shard": 1,
 			"RetryMax": 0,
 			"Tags": [
 				"site_test"

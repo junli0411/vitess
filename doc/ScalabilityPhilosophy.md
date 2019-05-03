@@ -15,8 +15,8 @@ run it on baremetal configs, and many users still do. If deploying in a cloud,
 the assignment of servers and ports is abstracted away from the administrator.
 On baremetal, the operator still has these responsibilities.
 
-We provide sample configs to help you [get started on Kubernetes](/getting-started/)
-since it's the most similar to Borg (the [predecessor to Kubernetes](http://blog.kubernetes.io/2015/04/borg-predecessor-to-kubernetes.html)
+We provide sample configs to help you [get started on Kubernetes](https://vitess.io/docs/tutorials/kubernetes/)
+since it's the most similar to Borg (the [predecessor to Kubernetes](https://kubernetes.io/blog/2015/04/borg-predecessor-to-kubernetes/)
 on which Vitess now runs in YouTube).
 If you're more familiar with alternatives like Mesos, Swarm, Nomad, or DC/OS,
 we'd welcome your contribution of sample configs for Vitess.
@@ -91,7 +91,7 @@ traffic.
 
 Vitess supports MapReduce access to the data. Vitess provides a Hadoop
 connector, that can also be used with Apache Spark. See the [Hadoop package
-documentation](https://github.com/youtube/vitess/tree/master/java/hadoop/src/main/java/io/vitess/hadoop)
+documentation](https://github.com/vitessio/vitess/tree/master/java/hadoop/src/main/java/io/vitess/hadoop)
 for more information.
 
 With a MapReduce framework, Vitess does not support very complicated
@@ -201,7 +201,7 @@ A few things to consider:
 * *vtcombo* can also start the *vtctld* component, so the test environment is
   visible with the Vitess UI.
 * See
-  [vttest.proto](https://github.com/youtube/vitess/blob/master/proto/vttest.proto)
+  [vttest.proto](https://github.com/vitessio/vitess/blob/master/proto/vttest.proto)
   for more information.
 
 ## Application query patterns

@@ -18,12 +18,14 @@ package worker
 
 import (
 	"flag"
-	"fmt"
 	"html/template"
 	"net/http"
 
-	"github.com/youtube/vitess/go/vt/wrangler"
+	"vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
+
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/wrangler"
 )
 
 const blockHTML = `
@@ -52,19 +54,19 @@ func commandBlock(wi *Instance, wr *wrangler.Wrangler, subFlags *flag.FlagSet, a
 	}
 	if subFlags.NArg() != 0 {
 		subFlags.Usage()
-		return nil, fmt.Errorf("command Block does not accept any parameter")
+		return nil, vterrors.New(vtrpc.Code_INVALID_ARGUMENT, "command Block does not accept any parameter")
 	}
 
 	worker, err := NewBlockWorker(wr)
 	if err != nil {
-		return nil, fmt.Errorf("Could not create Block worker: %v", err)
+		return nil, vterrors.Wrap(err, "Could not create Block worker")
 	}
 	return worker, nil
 }
 
 func interactiveBlock(ctx context.Context, wi *Instance, wr *wrangler.Wrangler, w http.ResponseWriter, r *http.Request) (Worker, *template.Template, map[string]interface{}, error) {
 	if err := r.ParseForm(); err != nil {
-		return nil, nil, nil, fmt.Errorf("Cannot parse form: %s", err)
+		return nil, nil, nil, vterrors.Wrap(err, "cannot parse form")
 	}
 
 	if submit := r.FormValue("submit"); submit == "" {
@@ -74,7 +76,7 @@ func interactiveBlock(ctx context.Context, wi *Instance, wr *wrangler.Wrangler, 
 
 	wrk, err := NewBlockWorker(wr)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("Could not create Block worker: %v", err)
+		return nil, nil, nil, vterrors.Wrap(err, "Could not create Block worker")
 	}
 	return wrk, nil, nil, nil
 }

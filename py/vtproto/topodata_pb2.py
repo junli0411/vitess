@@ -8,7 +8,6 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
 from google.protobuf import reflection as _reflection
 from google.protobuf import symbol_database as _symbol_database
-from google.protobuf import descriptor_pb2
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
@@ -20,7 +19,8 @@ DESCRIPTOR = _descriptor.FileDescriptor(
   name='topodata.proto',
   package='topodata',
   syntax='proto3',
-  serialized_pb=_b('\n\x0etopodata.proto\x12\x08topodata\"&\n\x08KeyRange\x12\r\n\x05start\x18\x01 \x01(\x0c\x12\x0b\n\x03\x65nd\x18\x02 \x01(\x0c\"(\n\x0bTabletAlias\x12\x0c\n\x04\x63\x65ll\x18\x01 \x01(\t\x12\x0b\n\x03uid\x18\x02 \x01(\r\"\xb6\x03\n\x06Tablet\x12$\n\x05\x61lias\x18\x01 \x01(\x0b\x32\x15.topodata.TabletAlias\x12\x10\n\x08hostname\x18\x02 \x01(\t\x12/\n\x08port_map\x18\x04 \x03(\x0b\x32\x1d.topodata.Tablet.PortMapEntry\x12\x10\n\x08keyspace\x18\x05 \x01(\t\x12\r\n\x05shard\x18\x06 \x01(\t\x12%\n\tkey_range\x18\x07 \x01(\x0b\x32\x12.topodata.KeyRange\x12\"\n\x04type\x18\x08 \x01(\x0e\x32\x14.topodata.TabletType\x12\x18\n\x10\x64\x62_name_override\x18\t \x01(\t\x12(\n\x04tags\x18\n \x03(\x0b\x32\x1a.topodata.Tablet.TagsEntry\x12\x16\n\x0emysql_hostname\x18\x0c \x01(\t\x12\x12\n\nmysql_port\x18\r \x01(\x05\x1a.\n\x0cPortMapEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x05:\x02\x38\x01\x1a+\n\tTagsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01J\x04\x08\x03\x10\x04J\x04\x08\x0b\x10\x0c\"\xcb\x04\n\x05Shard\x12+\n\x0cmaster_alias\x18\x01 \x01(\x0b\x32\x15.topodata.TabletAlias\x12%\n\tkey_range\x18\x02 \x01(\x0b\x32\x12.topodata.KeyRange\x12\x30\n\x0cserved_types\x18\x03 \x03(\x0b\x32\x1a.topodata.Shard.ServedType\x12\x32\n\rsource_shards\x18\x04 \x03(\x0b\x32\x1b.topodata.Shard.SourceShard\x12\r\n\x05\x63\x65lls\x18\x05 \x03(\t\x12\x36\n\x0ftablet_controls\x18\x06 \x03(\x0b\x32\x1d.topodata.Shard.TabletControl\x1a\x46\n\nServedType\x12)\n\x0btablet_type\x18\x01 \x01(\x0e\x32\x14.topodata.TabletType\x12\r\n\x05\x63\x65lls\x18\x02 \x03(\t\x1ar\n\x0bSourceShard\x12\x0b\n\x03uid\x18\x01 \x01(\r\x12\x10\n\x08keyspace\x18\x02 \x01(\t\x12\r\n\x05shard\x18\x03 \x01(\t\x12%\n\tkey_range\x18\x04 \x01(\x0b\x32\x12.topodata.KeyRange\x12\x0e\n\x06tables\x18\x05 \x03(\t\x1a\x84\x01\n\rTabletControl\x12)\n\x0btablet_type\x18\x01 \x01(\x0e\x32\x14.topodata.TabletType\x12\r\n\x05\x63\x65lls\x18\x02 \x03(\t\x12\x1d\n\x15\x64isable_query_service\x18\x03 \x01(\x08\x12\x1a\n\x12\x62lacklisted_tables\x18\x04 \x03(\t\"\xf5\x01\n\x08Keyspace\x12\x1c\n\x14sharding_column_name\x18\x01 \x01(\t\x12\x36\n\x14sharding_column_type\x18\x02 \x01(\x0e\x32\x18.topodata.KeyspaceIdType\x12\x33\n\x0cserved_froms\x18\x04 \x03(\x0b\x32\x1d.topodata.Keyspace.ServedFrom\x1aX\n\nServedFrom\x12)\n\x0btablet_type\x18\x01 \x01(\x0e\x32\x14.topodata.TabletType\x12\r\n\x05\x63\x65lls\x18\x02 \x03(\t\x12\x10\n\x08keyspace\x18\x03 \x01(\tJ\x04\x08\x03\x10\x04\"w\n\x10ShardReplication\x12.\n\x05nodes\x18\x01 \x03(\x0b\x32\x1f.topodata.ShardReplication.Node\x1a\x33\n\x04Node\x12+\n\x0ctablet_alias\x18\x01 \x01(\x0b\x32\x15.topodata.TabletAlias\"E\n\x0eShardReference\x12\x0c\n\x04name\x18\x01 \x01(\t\x12%\n\tkey_range\x18\x02 \x01(\x0b\x32\x12.topodata.KeyRange\"\x9c\x03\n\x0bSrvKeyspace\x12;\n\npartitions\x18\x01 \x03(\x0b\x32\'.topodata.SrvKeyspace.KeyspacePartition\x12\x1c\n\x14sharding_column_name\x18\x02 \x01(\t\x12\x36\n\x14sharding_column_type\x18\x03 \x01(\x0e\x32\x18.topodata.KeyspaceIdType\x12\x35\n\x0bserved_from\x18\x04 \x03(\x0b\x32 .topodata.SrvKeyspace.ServedFrom\x1ar\n\x11KeyspacePartition\x12)\n\x0bserved_type\x18\x01 \x01(\x0e\x32\x14.topodata.TabletType\x12\x32\n\x10shard_references\x18\x02 \x03(\x0b\x32\x18.topodata.ShardReference\x1aI\n\nServedFrom\x12)\n\x0btablet_type\x18\x01 \x01(\x0e\x32\x14.topodata.TabletType\x12\x10\n\x08keyspace\x18\x02 \x01(\tJ\x04\x08\x05\x10\x06\"@\n\x08\x43\x65llInfo\x12\x16\n\x0eserver_address\x18\x01 \x01(\t\x12\x0c\n\x04root\x18\x02 \x01(\t\x12\x0e\n\x06region\x18\x03 \x01(\t*2\n\x0eKeyspaceIdType\x12\t\n\x05UNSET\x10\x00\x12\n\n\x06UINT64\x10\x01\x12\t\n\x05\x42YTES\x10\x02*\x90\x01\n\nTabletType\x12\x0b\n\x07UNKNOWN\x10\x00\x12\n\n\x06MASTER\x10\x01\x12\x0b\n\x07REPLICA\x10\x02\x12\n\n\x06RDONLY\x10\x03\x12\t\n\x05\x42\x41TCH\x10\x03\x12\t\n\x05SPARE\x10\x04\x12\x10\n\x0c\x45XPERIMENTAL\x10\x05\x12\n\n\x06\x42\x41\x43KUP\x10\x06\x12\x0b\n\x07RESTORE\x10\x07\x12\x0b\n\x07\x44RAINED\x10\x08\x1a\x02\x10\x01\x42\x11\n\x0fio.vitess.protob\x06proto3')
+  serialized_options=_b('\n\017io.vitess.protoZ%vitess.io/vitess/go/vt/proto/topodata'),
+  serialized_pb=_b('\n\x0etopodata.proto\x12\x08topodata\"&\n\x08KeyRange\x12\r\n\x05start\x18\x01 \x01(\x0c\x12\x0b\n\x03\x65nd\x18\x02 \x01(\x0c\"(\n\x0bTabletAlias\x12\x0c\n\x04\x63\x65ll\x18\x01 \x01(\t\x12\x0b\n\x03uid\x18\x02 \x01(\r\"\xb6\x03\n\x06Tablet\x12$\n\x05\x61lias\x18\x01 \x01(\x0b\x32\x15.topodata.TabletAlias\x12\x10\n\x08hostname\x18\x02 \x01(\t\x12/\n\x08port_map\x18\x04 \x03(\x0b\x32\x1d.topodata.Tablet.PortMapEntry\x12\x10\n\x08keyspace\x18\x05 \x01(\t\x12\r\n\x05shard\x18\x06 \x01(\t\x12%\n\tkey_range\x18\x07 \x01(\x0b\x32\x12.topodata.KeyRange\x12\"\n\x04type\x18\x08 \x01(\x0e\x32\x14.topodata.TabletType\x12\x18\n\x10\x64\x62_name_override\x18\t \x01(\t\x12(\n\x04tags\x18\n \x03(\x0b\x32\x1a.topodata.Tablet.TagsEntry\x12\x16\n\x0emysql_hostname\x18\x0c \x01(\t\x12\x12\n\nmysql_port\x18\r \x01(\x05\x1a.\n\x0cPortMapEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x05:\x02\x38\x01\x1a+\n\tTagsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01J\x04\x08\x03\x10\x04J\x04\x08\x0b\x10\x0c\"\xd3\x04\n\x05Shard\x12+\n\x0cmaster_alias\x18\x01 \x01(\x0b\x32\x15.topodata.TabletAlias\x12%\n\tkey_range\x18\x02 \x01(\x0b\x32\x12.topodata.KeyRange\x12\x30\n\x0cserved_types\x18\x03 \x03(\x0b\x32\x1a.topodata.Shard.ServedType\x12\x32\n\rsource_shards\x18\x04 \x03(\x0b\x32\x1b.topodata.Shard.SourceShard\x12\x36\n\x0ftablet_controls\x18\x06 \x03(\x0b\x32\x1d.topodata.Shard.TabletControl\x12\x19\n\x11is_master_serving\x18\x07 \x01(\x08\x1a\x46\n\nServedType\x12)\n\x0btablet_type\x18\x01 \x01(\x0e\x32\x14.topodata.TabletType\x12\r\n\x05\x63\x65lls\x18\x02 \x03(\t\x1ar\n\x0bSourceShard\x12\x0b\n\x03uid\x18\x01 \x01(\r\x12\x10\n\x08keyspace\x18\x02 \x01(\t\x12\r\n\x05shard\x18\x03 \x01(\t\x12%\n\tkey_range\x18\x04 \x01(\x0b\x32\x12.topodata.KeyRange\x12\x0e\n\x06tables\x18\x05 \x03(\t\x1a{\n\rTabletControl\x12)\n\x0btablet_type\x18\x01 \x01(\x0e\x32\x14.topodata.TabletType\x12\r\n\x05\x63\x65lls\x18\x02 \x03(\t\x12\x1a\n\x12\x62lacklisted_tables\x18\x04 \x03(\t\x12\x0e\n\x06\x66rozen\x18\x05 \x01(\x08J\x04\x08\x03\x10\x04J\x04\x08\x05\x10\x06\"\xf5\x01\n\x08Keyspace\x12\x1c\n\x14sharding_column_name\x18\x01 \x01(\t\x12\x36\n\x14sharding_column_type\x18\x02 \x01(\x0e\x32\x18.topodata.KeyspaceIdType\x12\x33\n\x0cserved_froms\x18\x04 \x03(\x0b\x32\x1d.topodata.Keyspace.ServedFrom\x1aX\n\nServedFrom\x12)\n\x0btablet_type\x18\x01 \x01(\x0e\x32\x14.topodata.TabletType\x12\r\n\x05\x63\x65lls\x18\x02 \x03(\t\x12\x10\n\x08keyspace\x18\x03 \x01(\tJ\x04\x08\x03\x10\x04\"w\n\x10ShardReplication\x12.\n\x05nodes\x18\x01 \x03(\x0b\x32\x1f.topodata.ShardReplication.Node\x1a\x33\n\x04Node\x12+\n\x0ctablet_alias\x18\x01 \x01(\x0b\x32\x15.topodata.TabletAlias\"E\n\x0eShardReference\x12\x0c\n\x04name\x18\x01 \x01(\t\x12%\n\tkey_range\x18\x02 \x01(\x0b\x32\x12.topodata.KeyRange\"i\n\x12ShardTabletControl\x12\x0c\n\x04name\x18\x01 \x01(\t\x12%\n\tkey_range\x18\x02 \x01(\x0b\x32\x12.topodata.KeyRange\x12\x1e\n\x16query_service_disabled\x18\x03 \x01(\x08\"\xda\x03\n\x0bSrvKeyspace\x12;\n\npartitions\x18\x01 \x03(\x0b\x32\'.topodata.SrvKeyspace.KeyspacePartition\x12\x1c\n\x14sharding_column_name\x18\x02 \x01(\t\x12\x36\n\x14sharding_column_type\x18\x03 \x01(\x0e\x32\x18.topodata.KeyspaceIdType\x12\x35\n\x0bserved_from\x18\x04 \x03(\x0b\x32 .topodata.SrvKeyspace.ServedFrom\x1a\xaf\x01\n\x11KeyspacePartition\x12)\n\x0bserved_type\x18\x01 \x01(\x0e\x32\x14.topodata.TabletType\x12\x32\n\x10shard_references\x18\x02 \x03(\x0b\x32\x18.topodata.ShardReference\x12;\n\x15shard_tablet_controls\x18\x03 \x03(\x0b\x32\x1c.topodata.ShardTabletControl\x1aI\n\nServedFrom\x12)\n\x0btablet_type\x18\x01 \x01(\x0e\x32\x14.topodata.TabletType\x12\x10\n\x08keyspace\x18\x02 \x01(\tJ\x04\x08\x05\x10\x06\"6\n\x08\x43\x65llInfo\x12\x16\n\x0eserver_address\x18\x01 \x01(\t\x12\x0c\n\x04root\x18\x02 \x01(\tJ\x04\x08\x03\x10\x04\"\x1b\n\nCellsAlias\x12\r\n\x05\x63\x65lls\x18\x02 \x03(\t*2\n\x0eKeyspaceIdType\x12\t\n\x05UNSET\x10\x00\x12\n\n\x06UINT64\x10\x01\x12\t\n\x05\x42YTES\x10\x02*\x90\x01\n\nTabletType\x12\x0b\n\x07UNKNOWN\x10\x00\x12\n\n\x06MASTER\x10\x01\x12\x0b\n\x07REPLICA\x10\x02\x12\n\n\x06RDONLY\x10\x03\x12\t\n\x05\x42\x41TCH\x10\x03\x12\t\n\x05SPARE\x10\x04\x12\x10\n\x0c\x45XPERIMENTAL\x10\x05\x12\n\n\x06\x42\x41\x43KUP\x10\x06\x12\x0b\n\x07RESTORE\x10\x07\x12\x0b\n\x07\x44RAINED\x10\x08\x1a\x02\x10\x01\x42\x38\n\x0fio.vitess.protoZ%vitess.io/vitess/go/vt/proto/topodatab\x06proto3')
 )
 
 _KEYSPACEIDTYPE = _descriptor.EnumDescriptor(
@@ -31,21 +31,21 @@ _KEYSPACEIDTYPE = _descriptor.EnumDescriptor(
   values=[
     _descriptor.EnumValueDescriptor(
       name='UNSET', index=0, number=0,
-      options=None,
+      serialized_options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
       name='UINT64', index=1, number=1,
-      options=None,
+      serialized_options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
       name='BYTES', index=2, number=2,
-      options=None,
+      serialized_options=None,
       type=None),
   ],
   containing_type=None,
-  options=None,
-  serialized_start=2062,
-  serialized_end=2112,
+  serialized_options=None,
+  serialized_start=2258,
+  serialized_end=2308,
 )
 _sym_db.RegisterEnumDescriptor(_KEYSPACEIDTYPE)
 
@@ -58,49 +58,49 @@ _TABLETTYPE = _descriptor.EnumDescriptor(
   values=[
     _descriptor.EnumValueDescriptor(
       name='UNKNOWN', index=0, number=0,
-      options=None,
+      serialized_options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
       name='MASTER', index=1, number=1,
-      options=None,
+      serialized_options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
       name='REPLICA', index=2, number=2,
-      options=None,
+      serialized_options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
       name='RDONLY', index=3, number=3,
-      options=None,
+      serialized_options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
       name='BATCH', index=4, number=3,
-      options=None,
+      serialized_options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
       name='SPARE', index=5, number=4,
-      options=None,
+      serialized_options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
       name='EXPERIMENTAL', index=6, number=5,
-      options=None,
+      serialized_options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
       name='BACKUP', index=7, number=6,
-      options=None,
+      serialized_options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
       name='RESTORE', index=8, number=7,
-      options=None,
+      serialized_options=None,
       type=None),
     _descriptor.EnumValueDescriptor(
       name='DRAINED', index=9, number=8,
-      options=None,
+      serialized_options=None,
       type=None),
   ],
   containing_type=None,
-  options=_descriptor._ParseOptions(descriptor_pb2.EnumOptions(), _b('\020\001')),
-  serialized_start=2115,
-  serialized_end=2259,
+  serialized_options=_b('\020\001'),
+  serialized_start=2311,
+  serialized_end=2455,
 )
 _sym_db.RegisterEnumDescriptor(_TABLETTYPE)
 
@@ -134,21 +134,21 @@ _KEYRANGE = _descriptor.Descriptor(
       has_default_value=False, default_value=_b(""),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='end', full_name='topodata.KeyRange.end', index=1,
       number=2, type=12, cpp_type=9, label=1,
       has_default_value=False, default_value=_b(""),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
@@ -172,21 +172,21 @@ _TABLETALIAS = _descriptor.Descriptor(
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='uid', full_name='topodata.TabletAlias.uid', index=1,
       number=2, type=13, cpp_type=3, label=1,
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
@@ -210,21 +210,21 @@ _TABLET_PORTMAPENTRY = _descriptor.Descriptor(
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='value', full_name='topodata.Tablet.PortMapEntry.value', index=1,
       number=2, type=5, cpp_type=1, label=1,
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=_descriptor._ParseOptions(descriptor_pb2.MessageOptions(), _b('8\001')),
+  serialized_options=_b('8\001'),
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
@@ -247,21 +247,21 @@ _TABLET_TAGSENTRY = _descriptor.Descriptor(
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='value', full_name='topodata.Tablet.TagsEntry.value', index=1,
       number=2, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=_descriptor._ParseOptions(descriptor_pb2.MessageOptions(), _b('8\001')),
+  serialized_options=_b('8\001'),
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
@@ -284,84 +284,84 @@ _TABLET = _descriptor.Descriptor(
       has_default_value=False, default_value=None,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='hostname', full_name='topodata.Tablet.hostname', index=1,
       number=2, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='port_map', full_name='topodata.Tablet.port_map', index=2,
       number=4, type=11, cpp_type=10, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='keyspace', full_name='topodata.Tablet.keyspace', index=3,
       number=5, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='shard', full_name='topodata.Tablet.shard', index=4,
       number=6, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='key_range', full_name='topodata.Tablet.key_range', index=5,
       number=7, type=11, cpp_type=10, label=1,
       has_default_value=False, default_value=None,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='type', full_name='topodata.Tablet.type', index=6,
       number=8, type=14, cpp_type=8, label=1,
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='db_name_override', full_name='topodata.Tablet.db_name_override', index=7,
       number=9, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='tags', full_name='topodata.Tablet.tags', index=8,
       number=10, type=11, cpp_type=10, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='mysql_hostname', full_name='topodata.Tablet.mysql_hostname', index=9,
       number=12, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='mysql_port', full_name='topodata.Tablet.mysql_port', index=10,
       number=13, type=5, cpp_type=1, label=1,
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[_TABLET_PORTMAPENTRY, _TABLET_TAGSENTRY, ],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
@@ -385,28 +385,28 @@ _SHARD_SERVEDTYPE = _descriptor.Descriptor(
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='cells', full_name='topodata.Shard.ServedType.cells', index=1,
       number=2, type=9, cpp_type=9, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=818,
-  serialized_end=888,
+  serialized_start=830,
+  serialized_end=900,
 )
 
 _SHARD_SOURCESHARD = _descriptor.Descriptor(
@@ -422,49 +422,49 @@ _SHARD_SOURCESHARD = _descriptor.Descriptor(
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='keyspace', full_name='topodata.Shard.SourceShard.keyspace', index=1,
       number=2, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='shard', full_name='topodata.Shard.SourceShard.shard', index=2,
       number=3, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='key_range', full_name='topodata.Shard.SourceShard.key_range', index=3,
       number=4, type=11, cpp_type=10, label=1,
       has_default_value=False, default_value=None,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='tables', full_name='topodata.Shard.SourceShard.tables', index=4,
       number=5, type=9, cpp_type=9, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=890,
-  serialized_end=1004,
+  serialized_start=902,
+  serialized_end=1016,
 )
 
 _SHARD_TABLETCONTROL = _descriptor.Descriptor(
@@ -480,42 +480,42 @@ _SHARD_TABLETCONTROL = _descriptor.Descriptor(
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='cells', full_name='topodata.Shard.TabletControl.cells', index=1,
       number=2, type=9, cpp_type=9, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
-      name='disable_query_service', full_name='topodata.Shard.TabletControl.disable_query_service', index=2,
-      number=3, type=8, cpp_type=7, label=1,
-      has_default_value=False, default_value=False,
-      message_type=None, enum_type=None, containing_type=None,
-      is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
-    _descriptor.FieldDescriptor(
-      name='blacklisted_tables', full_name='topodata.Shard.TabletControl.blacklisted_tables', index=3,
+      name='blacklisted_tables', full_name='topodata.Shard.TabletControl.blacklisted_tables', index=2,
       number=4, type=9, cpp_type=9, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
+    _descriptor.FieldDescriptor(
+      name='frozen', full_name='topodata.Shard.TabletControl.frozen', index=3,
+      number=5, type=8, cpp_type=7, label=1,
+      has_default_value=False, default_value=False,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=1007,
-  serialized_end=1139,
+  serialized_start=1018,
+  serialized_end=1141,
 )
 
 _SHARD = _descriptor.Descriptor(
@@ -531,56 +531,56 @@ _SHARD = _descriptor.Descriptor(
       has_default_value=False, default_value=None,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='key_range', full_name='topodata.Shard.key_range', index=1,
       number=2, type=11, cpp_type=10, label=1,
       has_default_value=False, default_value=None,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='served_types', full_name='topodata.Shard.served_types', index=2,
       number=3, type=11, cpp_type=10, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='source_shards', full_name='topodata.Shard.source_shards', index=3,
       number=4, type=11, cpp_type=10, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
-      name='cells', full_name='topodata.Shard.cells', index=4,
-      number=5, type=9, cpp_type=9, label=3,
-      has_default_value=False, default_value=[],
-      message_type=None, enum_type=None, containing_type=None,
-      is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
-    _descriptor.FieldDescriptor(
-      name='tablet_controls', full_name='topodata.Shard.tablet_controls', index=5,
+      name='tablet_controls', full_name='topodata.Shard.tablet_controls', index=4,
       number=6, type=11, cpp_type=10, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
+    _descriptor.FieldDescriptor(
+      name='is_master_serving', full_name='topodata.Shard.is_master_serving', index=5,
+      number=7, type=8, cpp_type=7, label=1,
+      has_default_value=False, default_value=False,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[_SHARD_SERVEDTYPE, _SHARD_SOURCESHARD, _SHARD_TABLETCONTROL, ],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
   serialized_start=552,
-  serialized_end=1139,
+  serialized_end=1147,
 )
 
 
@@ -597,35 +597,35 @@ _KEYSPACE_SERVEDFROM = _descriptor.Descriptor(
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='cells', full_name='topodata.Keyspace.ServedFrom.cells', index=1,
       number=2, type=9, cpp_type=9, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='keyspace', full_name='topodata.Keyspace.ServedFrom.keyspace', index=2,
       number=3, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=1293,
-  serialized_end=1381,
+  serialized_start=1301,
+  serialized_end=1389,
 )
 
 _KEYSPACE = _descriptor.Descriptor(
@@ -641,35 +641,35 @@ _KEYSPACE = _descriptor.Descriptor(
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='sharding_column_type', full_name='topodata.Keyspace.sharding_column_type', index=1,
       number=2, type=14, cpp_type=8, label=1,
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='served_froms', full_name='topodata.Keyspace.served_froms', index=2,
       number=4, type=11, cpp_type=10, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[_KEYSPACE_SERVEDFROM, ],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=1142,
-  serialized_end=1387,
+  serialized_start=1150,
+  serialized_end=1395,
 )
 
 
@@ -686,21 +686,21 @@ _SHARDREPLICATION_NODE = _descriptor.Descriptor(
       has_default_value=False, default_value=None,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=1457,
-  serialized_end=1508,
+  serialized_start=1465,
+  serialized_end=1516,
 )
 
 _SHARDREPLICATION = _descriptor.Descriptor(
@@ -716,21 +716,21 @@ _SHARDREPLICATION = _descriptor.Descriptor(
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[_SHARDREPLICATION_NODE, ],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=1389,
-  serialized_end=1508,
+  serialized_start=1397,
+  serialized_end=1516,
 )
 
 
@@ -747,28 +747,73 @@ _SHARDREFERENCE = _descriptor.Descriptor(
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='key_range', full_name='topodata.ShardReference.key_range', index=1,
       number=2, type=11, cpp_type=10, label=1,
       has_default_value=False, default_value=None,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=1510,
-  serialized_end=1579,
+  serialized_start=1518,
+  serialized_end=1587,
+)
+
+
+_SHARDTABLETCONTROL = _descriptor.Descriptor(
+  name='ShardTabletControl',
+  full_name='topodata.ShardTabletControl',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  fields=[
+    _descriptor.FieldDescriptor(
+      name='name', full_name='topodata.ShardTabletControl.name', index=0,
+      number=1, type=9, cpp_type=9, label=1,
+      has_default_value=False, default_value=_b("").decode('utf-8'),
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
+    _descriptor.FieldDescriptor(
+      name='key_range', full_name='topodata.ShardTabletControl.key_range', index=1,
+      number=2, type=11, cpp_type=10, label=1,
+      has_default_value=False, default_value=None,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
+    _descriptor.FieldDescriptor(
+      name='query_service_disabled', full_name='topodata.ShardTabletControl.query_service_disabled', index=2,
+      number=3, type=8, cpp_type=7, label=1,
+      has_default_value=False, default_value=False,
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  serialized_options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=1589,
+  serialized_end=1694,
 )
 
 
@@ -785,28 +830,35 @@ _SRVKEYSPACE_KEYSPACEPARTITION = _descriptor.Descriptor(
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='shard_references', full_name='topodata.SrvKeyspace.KeyspacePartition.shard_references', index=1,
       number=2, type=11, cpp_type=10, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
+    _descriptor.FieldDescriptor(
+      name='shard_tablet_controls', full_name='topodata.SrvKeyspace.KeyspacePartition.shard_tablet_controls', index=2,
+      number=3, type=11, cpp_type=10, label=3,
+      has_default_value=False, default_value=[],
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=1799,
-  serialized_end=1913,
+  serialized_start=1915,
+  serialized_end=2090,
 )
 
 _SRVKEYSPACE_SERVEDFROM = _descriptor.Descriptor(
@@ -822,28 +874,28 @@ _SRVKEYSPACE_SERVEDFROM = _descriptor.Descriptor(
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='keyspace', full_name='topodata.SrvKeyspace.ServedFrom.keyspace', index=1,
       number=2, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=1915,
-  serialized_end=1988,
+  serialized_start=2092,
+  serialized_end=2165,
 )
 
 _SRVKEYSPACE = _descriptor.Descriptor(
@@ -859,42 +911,42 @@ _SRVKEYSPACE = _descriptor.Descriptor(
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='sharding_column_name', full_name='topodata.SrvKeyspace.sharding_column_name', index=1,
       number=2, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='sharding_column_type', full_name='topodata.SrvKeyspace.sharding_column_type', index=2,
       number=3, type=14, cpp_type=8, label=1,
       has_default_value=False, default_value=0,
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='served_from', full_name='topodata.SrvKeyspace.served_from', index=3,
       number=4, type=11, cpp_type=10, label=3,
       has_default_value=False, default_value=[],
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[_SRVKEYSPACE_KEYSPACEPARTITION, _SRVKEYSPACE_SERVEDFROM, ],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=1582,
-  serialized_end=1994,
+  serialized_start=1697,
+  serialized_end=2171,
 )
 
 
@@ -911,35 +963,59 @@ _CELLINFO = _descriptor.Descriptor(
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None, file=DESCRIPTOR),
+      serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
       name='root', full_name='topodata.CellInfo.root', index=1,
       number=2, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=_b("").decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
-      options=None),
-    _descriptor.FieldDescriptor(
-      name='region', full_name='topodata.CellInfo.region', index=2,
-      number=3, type=9, cpp_type=9, label=1,
-      has_default_value=False, default_value=_b("").decode('utf-8'),
-      message_type=None, enum_type=None, containing_type=None,
-      is_extension=False, extension_scope=None,
-      options=None),
+      serialized_options=None, file=DESCRIPTOR),
   ],
   extensions=[
   ],
   nested_types=[],
   enum_types=[
   ],
-  options=None,
+  serialized_options=None,
   is_extendable=False,
   syntax='proto3',
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=1996,
-  serialized_end=2060,
+  serialized_start=2173,
+  serialized_end=2227,
+)
+
+
+_CELLSALIAS = _descriptor.Descriptor(
+  name='CellsAlias',
+  full_name='topodata.CellsAlias',
+  filename=None,
+  file=DESCRIPTOR,
+  containing_type=None,
+  fields=[
+    _descriptor.FieldDescriptor(
+      name='cells', full_name='topodata.CellsAlias.cells', index=0,
+      number=2, type=9, cpp_type=9, label=3,
+      has_default_value=False, default_value=[],
+      message_type=None, enum_type=None, containing_type=None,
+      is_extension=False, extension_scope=None,
+      serialized_options=None, file=DESCRIPTOR),
+  ],
+  extensions=[
+  ],
+  nested_types=[],
+  enum_types=[
+  ],
+  serialized_options=None,
+  is_extendable=False,
+  syntax='proto3',
+  extension_ranges=[],
+  oneofs=[
+  ],
+  serialized_start=2229,
+  serialized_end=2256,
 )
 
 _TABLET_PORTMAPENTRY.containing_type = _TABLET
@@ -968,8 +1044,10 @@ _SHARDREPLICATION_NODE.fields_by_name['tablet_alias'].message_type = _TABLETALIA
 _SHARDREPLICATION_NODE.containing_type = _SHARDREPLICATION
 _SHARDREPLICATION.fields_by_name['nodes'].message_type = _SHARDREPLICATION_NODE
 _SHARDREFERENCE.fields_by_name['key_range'].message_type = _KEYRANGE
+_SHARDTABLETCONTROL.fields_by_name['key_range'].message_type = _KEYRANGE
 _SRVKEYSPACE_KEYSPACEPARTITION.fields_by_name['served_type'].enum_type = _TABLETTYPE
 _SRVKEYSPACE_KEYSPACEPARTITION.fields_by_name['shard_references'].message_type = _SHARDREFERENCE
+_SRVKEYSPACE_KEYSPACEPARTITION.fields_by_name['shard_tablet_controls'].message_type = _SHARDTABLETCONTROL
 _SRVKEYSPACE_KEYSPACEPARTITION.containing_type = _SRVKEYSPACE
 _SRVKEYSPACE_SERVEDFROM.fields_by_name['tablet_type'].enum_type = _TABLETTYPE
 _SRVKEYSPACE_SERVEDFROM.containing_type = _SRVKEYSPACE
@@ -983,8 +1061,10 @@ DESCRIPTOR.message_types_by_name['Shard'] = _SHARD
 DESCRIPTOR.message_types_by_name['Keyspace'] = _KEYSPACE
 DESCRIPTOR.message_types_by_name['ShardReplication'] = _SHARDREPLICATION
 DESCRIPTOR.message_types_by_name['ShardReference'] = _SHARDREFERENCE
+DESCRIPTOR.message_types_by_name['ShardTabletControl'] = _SHARDTABLETCONTROL
 DESCRIPTOR.message_types_by_name['SrvKeyspace'] = _SRVKEYSPACE
 DESCRIPTOR.message_types_by_name['CellInfo'] = _CELLINFO
+DESCRIPTOR.message_types_by_name['CellsAlias'] = _CELLSALIAS
 DESCRIPTOR.enum_types_by_name['KeyspaceIdType'] = _KEYSPACEIDTYPE
 DESCRIPTOR.enum_types_by_name['TabletType'] = _TABLETTYPE
 _sym_db.RegisterFileDescriptor(DESCRIPTOR)
@@ -1094,6 +1174,13 @@ ShardReference = _reflection.GeneratedProtocolMessageType('ShardReference', (_me
   ))
 _sym_db.RegisterMessage(ShardReference)
 
+ShardTabletControl = _reflection.GeneratedProtocolMessageType('ShardTabletControl', (_message.Message,), dict(
+  DESCRIPTOR = _SHARDTABLETCONTROL,
+  __module__ = 'topodata_pb2'
+  # @@protoc_insertion_point(class_scope:topodata.ShardTabletControl)
+  ))
+_sym_db.RegisterMessage(ShardTabletControl)
+
 SrvKeyspace = _reflection.GeneratedProtocolMessageType('SrvKeyspace', (_message.Message,), dict(
 
   KeyspacePartition = _reflection.GeneratedProtocolMessageType('KeyspacePartition', (_message.Message,), dict(
@@ -1124,13 +1211,16 @@ CellInfo = _reflection.GeneratedProtocolMessageType('CellInfo', (_message.Messag
   ))
 _sym_db.RegisterMessage(CellInfo)
 
+CellsAlias = _reflection.GeneratedProtocolMessageType('CellsAlias', (_message.Message,), dict(
+  DESCRIPTOR = _CELLSALIAS,
+  __module__ = 'topodata_pb2'
+  # @@protoc_insertion_point(class_scope:topodata.CellsAlias)
+  ))
+_sym_db.RegisterMessage(CellsAlias)
 
-DESCRIPTOR.has_options = True
-DESCRIPTOR._options = _descriptor._ParseOptions(descriptor_pb2.FileOptions(), _b('\n\017io.vitess.proto'))
-_TABLETTYPE.has_options = True
-_TABLETTYPE._options = _descriptor._ParseOptions(descriptor_pb2.EnumOptions(), _b('\020\001'))
-_TABLET_PORTMAPENTRY.has_options = True
-_TABLET_PORTMAPENTRY._options = _descriptor._ParseOptions(descriptor_pb2.MessageOptions(), _b('8\001'))
-_TABLET_TAGSENTRY.has_options = True
-_TABLET_TAGSENTRY._options = _descriptor._ParseOptions(descriptor_pb2.MessageOptions(), _b('8\001'))
+
+DESCRIPTOR._options = None
+_TABLETTYPE._options = None
+_TABLET_PORTMAPENTRY._options = None
+_TABLET_TAGSENTRY._options = None
 # @@protoc_insertion_point(module_scope)

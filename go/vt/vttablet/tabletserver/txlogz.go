@@ -23,15 +23,15 @@ import (
 	"net/http"
 	"time"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/acl"
-	"github.com/youtube/vitess/go/streamlog"
-	"github.com/youtube/vitess/go/vt/callerid"
-	"github.com/youtube/vitess/go/vt/logz"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/acl"
+	"vitess.io/vitess/go/streamlog"
+	"vitess.io/vitess/go/vt/callerid"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logz"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 var (
@@ -113,7 +113,7 @@ func txlogzHandler(w http.ResponseWriter, req *http.Request) {
 		case out := <-ch:
 			txc, ok := out.(*TxConnection)
 			if !ok {
-				err := fmt.Errorf("Unexpected value in %s: %#v (expecting value of type %T)", tabletenv.TxLogger.Name(), out, &TxConnection{})
+				err := fmt.Errorf("unexpected value in %s: %#v (expecting value of type %T)", tabletenv.TxLogger.Name(), out, &TxConnection{})
 				io.WriteString(w, `<tr class="error">`)
 				io.WriteString(w, err.Error())
 				io.WriteString(w, "</tr>")

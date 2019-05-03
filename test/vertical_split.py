@@ -420,7 +420,25 @@ msg varchar(64)
                         '--tables', '/moving/,view1',
                         '--chunk_count', '10',
                         '--min_rows_per_chunk', '1',
-                        '--min_healthy_rdonly_tablets', '1',
+                        '--min_healthy_tablets', '1',
+                        'destination_keyspace/0'],
+                       auto_log=True)
+
+    # test Cancel first
+    utils.run_vtctl(['CancelResharding', 'destination_keyspace/0'], auto_log=True)
+    self.check_no_binlog_player(destination_master)
+    # master should be in serving state after cancel
+    utils.check_tablet_query_service(self, destination_master, True, False)
+
+    # redo VerticalSplitClone
+    utils.run_vtworker(['--cell', 'test_nj',
+                        '--command_display_interval', '10ms',
+                        '--use_v3_resharding_mode=false',
+                        'VerticalSplitClone',
+                        '--tables', '/moving/,view1',
+                        '--chunk_count', '10',
+                        '--min_rows_per_chunk', '1',
+                        '--min_healthy_tablets', '1',
                         'destination_keyspace/0'],
                        auto_log=True)
 
@@ -434,6 +452,13 @@ msg varchar(64)
     if base_sharding.use_rbr:
       self._check_values(destination_master, 'vt_destination_keyspace',
                          'moving3_no_pk', self.moving3_no_pk_first, 100)
+
+    # Verify vreplication table entries
+    result = destination_master.mquery('_vt', 'select * from vreplication')
+    self.assertEqual(len(result), 1)
+    self.assertEqual(result[0][1], 'SplitClone')
+    self.assertEqual(result[0][2],
+      'keyspace:"source_keyspace" shard:"0" tables:"/moving/" tables:"view1" ')
 
     # check the binlog player is running and exporting vars
     self.check_destination_master(destination_master, ['source_keyspace/0'])
@@ -498,10 +523,10 @@ msg varchar(64)
     for ksf in keyspace_json['served_froms']:
       if ksf['tablet_type'] == topodata_pb2.RDONLY:
         found = True
-        self.assertEqual(ksf['cells'], ['test_nj'])
+        self.assertEqual(sorted(ksf['cells']), ['test_ca', 'test_nj'])
     self.assertTrue(found)
     utils.run_vtctl(['SetKeyspaceServedFrom', '-source=source_keyspace',
-                     '-remove', '-cells=test_nj', 'destination_keyspace',
+                     '-remove', '-cells=test_nj,test_ca', 'destination_keyspace',
                      'rdonly'], auto_log=True)
     keyspace_json = utils.run_vtctl_json(
         ['GetKeyspace', 'destination_keyspace'])
@@ -566,6 +591,10 @@ msg varchar(64)
     self._check_client_conn_redirection(
         'destination_keyspace',
         ['master'], ['moving1', 'moving2'])
+
+    # Cancel should fail now
+    utils.run_vtctl(['CancelResharding', 'destination_keyspace/0'],
+                    auto_log=True, expect_fail=True)
 
     # then serve master from the destination shards
     utils.run_vtctl(['MigrateServedFrom', 'destination_keyspace/0', 'master'],

@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/youtube/vitess/go/vt/callinfo"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/callinfo"
 )
 
 // QueryDetail is a simple wrapper for Query, Context and a killable conn.
@@ -118,7 +118,7 @@ func (ql *QueryList) GetQueryzRows() []QueryDetailzRow {
 			Query:       qd.conn.Current(),
 			ContextHTML: callinfo.HTMLFromContext(qd.ctx),
 			Start:       qd.start,
-			Duration:    time.Now().Sub(qd.start),
+			Duration:    time.Since(qd.start),
 			ConnID:      qd.connID,
 		}
 		rows = append(rows, row)

@@ -2,7 +2,7 @@
 
 # Overview
 
-Vitess 2PC allows you to perform atomic distributed commits. The feature is implemented using traditional MySQL transactions, and hence inherits the same guarantees. With this addition, Vitess can be configured to support the following three levels of atomicty:
+Vitess 2PC allows you to perform atomic distributed commits. The feature is implemented using traditional MySQL transactions, and hence inherits the same guarantees. With this addition, Vitess can be configured to support the following three levels of atomicity:
 
 1. **Single database**: At this level, only single database transactions are allowed. Any transaction that tries to go beyond a single database will be failed.
 2. **Multi database**: A transaction can span multiple databases, but the commit will be best effort. Partial commits are possible.
@@ -12,11 +12,10 @@ Vitess 2PC allows you to perform atomic distributed commits. The feature is impl
 
 ## Isolation
 
-2PC transactions only guarantee atomicity: Either the whole transaction commits, or it's rolled back entirely. It does not guarantee ACID Isolation. This means that a third party that performs cross-database reads can observe partial commits while a 2PC transaction is in progress.
+2PC transactions guarantee atomicity: either the whole transaction commits, or it's rolled back entirely. It does not guarantee Isolation (in the ACID sense). This means that a third party that performs cross-database reads can observe partial commits while a 2PC transaction is in progress.
 
-Guaranteeing ACID isolation is very contentious and has high costs. Providing it by default would have made vitess impractical for the most common use cases.
+Guaranteeing ACID Isolation is very contentious and has high costs. Providing it by default would have made vitess impractical for the most common use cases.
 
-However, it is possible for the application to judiciously request ACID isolation where critical: If `SELECT`s are performed with `LOCK IN SHARE MODE`, then you're guaranteed that the data will not be modified by anyone else until the transaction is complete.
 
 # Configuring VTGate
 
@@ -26,7 +25,7 @@ To enforce single-database transactions, the VTGates can be started by specifyin
 
 To enable 2PC, the VTGates need to be started with `transaction_mode=twopc`. The VTTablets will require a few more flags, which will be explained below.
 
-The VTGate `transaction_mode` flag decides what to allow. The application can independently request a specific atomicity for each transaction. The request will be honored by VTGate only if it does not exceed what is allowed by the `transaction_mode`. For example, `transacion_mode=single` will only allow single-db transactions. On the other hand, `transaction_mode=twopc` will allow all three levels of atomicity.
+The VTGate `transaction_mode` flag decides what to allow. The application can independently request a specific atomicity for each transaction. The request will be honored by VTGate only if it does not exceed what is allowed by the `transaction_mode`. For example, `transaction_mode=single` will only allow single-db transactions. On the other hand, `transaction_mode=twopc` will allow all three levels of atomicity.
 
 # Driver APIs
 

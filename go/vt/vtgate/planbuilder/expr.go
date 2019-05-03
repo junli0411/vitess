@@ -21,8 +21,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vtgate/engine"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vtgate/engine"
 )
 
 // splitAndExpression breaks up the Expr into AND-separated conditions
@@ -32,9 +32,16 @@ func splitAndExpression(filters []sqlparser.Expr, node sqlparser.Expr) []sqlpars
 	if node == nil {
 		return filters
 	}
-	if node, ok := node.(*sqlparser.AndExpr); ok {
+	switch node := node.(type) {
+	case *sqlparser.AndExpr:
 		filters = splitAndExpression(filters, node.Left)
 		return splitAndExpression(filters, node.Right)
+	case *sqlparser.ParenExpr:
+		// If the inner expression is AndExpr, then we can remove
+		// the parenthesis because they are unnecessary.
+		if node, ok := node.Expr.(*sqlparser.AndExpr); ok {
+			return splitAndExpression(filters, node)
+		}
 	}
 	return append(filters, node)
 }
@@ -42,12 +49,16 @@ func splitAndExpression(filters []sqlparser.Expr, node sqlparser.Expr) []sqlpars
 // skipParenthesis skips the parenthesis (if any) of an expression and
 // returns the innermost unparenthesized expression.
 func skipParenthesis(node sqlparser.Expr) sqlparser.Expr {
-	for {
-		if node, ok := node.(*sqlparser.ParenExpr); ok {
-			return skipParenthesis(node.Expr)
-		}
-		return node
+	if node, ok := node.(*sqlparser.ParenExpr); ok {
+		return skipParenthesis(node.Expr)
 	}
+	return node
+}
+
+type subqueryInfo struct {
+	ast    *sqlparser.Subquery
+	bldr   builder
+	origin builder
 }
 
 // findOrigin identifies the right-most origin referenced by expr. In situations where
@@ -73,70 +84,148 @@ func skipParenthesis(node sqlparser.Expr) sqlparser.Expr {
 //
 // If an expression has no references to the current query, then the left-most
 // origin is chosen as the default.
-func findOrigin(expr sqlparser.Expr, bldr builder) (origin columnOriginator, err error) {
-	highestOrigin := bldr.Leftmost()
-	var subroutes []*route
+func (pb *primitiveBuilder) findOrigin(expr sqlparser.Expr) (pullouts []*pulloutSubquery, origin builder, pushExpr sqlparser.Expr, err error) {
+	// highestOrigin tracks the highest origin referenced by the expression.
+	// Default is the First.
+	highestOrigin := pb.bldr.First()
+
+	// subqueries tracks the list of subqueries encountered.
+	var subqueries []subqueryInfo
+
+	// constructsMap tracks the sub-construct in which a subquery
+	// occurred. The construct type decides on how the query gets
+	// pulled out.
+	constructsMap := make(map[*sqlparser.Subquery]sqlparser.Expr)
+
 	err = sqlparser.Walk(func(node sqlparser.SQLNode) (kontinue bool, err error) {
 		switch node := node.(type) {
 		case *sqlparser.ColName:
-			newOrigin, isLocal, err := bldr.Symtab().Find(node)
+			newOrigin, isLocal, err := pb.st.Find(node)
 			if err != nil {
 				return false, err
 			}
 			if isLocal && newOrigin.Order() > highestOrigin.Order() {
 				highestOrigin = newOrigin
 			}
+		case *sqlparser.ComparisonExpr:
+			if node.Operator == sqlparser.InStr || node.Operator == sqlparser.NotInStr {
+				if sq, ok := node.Right.(*sqlparser.Subquery); ok {
+					constructsMap[sq] = node
+				}
+			}
+		case *sqlparser.ExistsExpr:
+			constructsMap[node.Subquery] = node
 		case *sqlparser.Subquery:
-			var subplan builder
+			spb := newPrimitiveBuilder(pb.vschema, pb.jt)
 			switch stmt := node.Select.(type) {
 			case *sqlparser.Select:
-				subplan, err = processSelect(stmt, bldr.Symtab().VSchema, bldr)
+				if err := spb.processSelect(stmt, pb.st); err != nil {
+					return false, err
+				}
 			case *sqlparser.Union:
-				subplan, err = processUnion(stmt, bldr.Symtab().VSchema, bldr)
+				if err := spb.processUnion(stmt, pb.st); err != nil {
+					return false, err
+				}
 			default:
 				panic(fmt.Sprintf("BUG: unexpected SELECT type: %T", node))
 			}
-			if err != nil {
-				return false, err
+			sqi := subqueryInfo{
+				ast:  node,
+				bldr: spb.bldr,
 			}
-			subroute, isRoute := subplan.(*route)
-			if !isRoute {
-				return false, errors.New("unsupported: cross-shard query in subqueries")
-			}
-			for _, extern := range subroute.Symtab().Externs {
+			for _, extern := range spb.st.Externs {
 				// No error expected. These are resolved externs.
-				newOrigin, isLocal, _ := bldr.Symtab().Find(extern)
-				if isLocal && newOrigin.Order() > highestOrigin.Order() {
+				newOrigin, isLocal, _ := pb.st.Find(extern)
+				if !isLocal {
+					continue
+				}
+				if highestOrigin.Order() < newOrigin.Order() {
 					highestOrigin = newOrigin
 				}
+				if sqi.origin == nil {
+					sqi.origin = newOrigin
+				} else if sqi.origin.Order() < newOrigin.Order() {
+					sqi.origin = newOrigin
+				}
 			}
-			subroutes = append(subroutes, subroute)
+			subqueries = append(subqueries, sqi)
 			return false, nil
 		case *sqlparser.FuncExpr:
+			switch {
 			// If it's last_insert_id, ensure it's a single unsharded route.
-			if !node.Name.EqualString("last_insert_id") {
-				return true, nil
+			case node.Name.EqualString("last_insert_id"):
+				if rb, isRoute := pb.bldr.(*route); !isRoute || !rb.removeShardedOptions() {
+					return false, errors.New("unsupported: LAST_INSERT_ID is only allowed for unsharded keyspaces")
+				}
 			}
-			if rb, isRoute := bldr.(*route); !isRoute || rb.ERoute.Keyspace.Sharded {
-				return false, errors.New("unsupported: LAST_INSERT_ID is only allowed for unsharded keyspaces")
-			}
+			return true, nil
 		}
 		return true, nil
 	}, expr)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	highestRoute, isRoute := highestOrigin.(*route)
-	if !isRoute && len(subroutes) > 0 {
-		return nil, errors.New("unsupported: subquery cannot be merged with cross-shard subquery")
-	}
-	for _, subroute := range subroutes {
-		if err := highestRoute.SubqueryCanMerge(subroute); err != nil {
-			return nil, err
+
+	highestRoute, _ := highestOrigin.(*route)
+	for _, sqi := range subqueries {
+		subroute, _ := sqi.bldr.(*route)
+		if highestRoute != nil && subroute != nil && highestRoute.MergeSubquery(pb, subroute) {
+			continue
 		}
-		subroute.Redirect = highestRoute
+		if sqi.origin != nil {
+			return nil, nil, nil, errors.New("unsupported: cross-shard correlated subquery")
+		}
+
+		sqName, hasValues := pb.jt.GenerateSubqueryVars()
+		construct, ok := constructsMap[sqi.ast]
+		if !ok {
+			// (subquery) -> :_sq
+			expr = sqlparser.ReplaceExpr(expr, sqi.ast, sqlparser.NewValArg([]byte(":"+sqName)))
+			pullouts = append(pullouts, newPulloutSubquery(engine.PulloutValue, sqName, hasValues, sqi.bldr))
+			continue
+		}
+		switch construct := construct.(type) {
+		case *sqlparser.ComparisonExpr:
+			if construct.Operator == sqlparser.InStr {
+				// a in (subquery) -> (:__sq_has_values = 1 and (a in ::__sq))
+				newExpr := &sqlparser.ParenExpr{
+					Expr: &sqlparser.AndExpr{
+						Left: &sqlparser.ComparisonExpr{
+							Left:     sqlparser.NewValArg([]byte(":" + hasValues)),
+							Operator: sqlparser.EqualStr,
+							Right:    sqlparser.NewIntVal([]byte("1")),
+						},
+						Right: &sqlparser.ParenExpr{
+							Expr: sqlparser.ReplaceExpr(construct, sqi.ast, sqlparser.ListArg([]byte("::"+sqName))),
+						},
+					},
+				}
+				expr = sqlparser.ReplaceExpr(expr, construct, newExpr)
+				pullouts = append(pullouts, newPulloutSubquery(engine.PulloutIn, sqName, hasValues, sqi.bldr))
+			} else {
+				// a not in (subquery) -> (:__sq_has_values = 0 or (a not in ::__sq))
+				newExpr := &sqlparser.ParenExpr{
+					Expr: &sqlparser.OrExpr{
+						Left: &sqlparser.ComparisonExpr{
+							Left:     sqlparser.NewValArg([]byte(":" + hasValues)),
+							Operator: sqlparser.EqualStr,
+							Right:    sqlparser.NewIntVal([]byte("0")),
+						},
+						Right: &sqlparser.ParenExpr{
+							Expr: sqlparser.ReplaceExpr(construct, sqi.ast, sqlparser.ListArg([]byte("::"+sqName))),
+						},
+					},
+				}
+				expr = sqlparser.ReplaceExpr(expr, construct, newExpr)
+				pullouts = append(pullouts, newPulloutSubquery(engine.PulloutNotIn, sqName, hasValues, sqi.bldr))
+			}
+		case *sqlparser.ExistsExpr:
+			// exists (subquery) -> :__sq_has_values
+			expr = sqlparser.ReplaceExpr(expr, construct, sqlparser.NewValArg([]byte(":"+hasValues)))
+			pullouts = append(pullouts, newPulloutSubquery(engine.PulloutExists, sqName, hasValues, sqi.bldr))
+		}
 	}
-	return highestOrigin, nil
+	return pullouts, highestOrigin, expr, nil
 }
 
 func hasSubquery(node sqlparser.SQLNode) bool {
@@ -151,10 +240,17 @@ func hasSubquery(node sqlparser.SQLNode) bool {
 	return has
 }
 
-func validateSubquerySamePlan(outerRoute *engine.Route, bldr builder, vschema VSchema, nodes ...sqlparser.SQLNode) bool {
-	samePlan := true
+func (pb *primitiveBuilder) finalizeUnshardedDMLSubqueries(nodes ...sqlparser.SQLNode) bool {
+	var keyspace string
+	if rb, ok := pb.bldr.(*route); ok {
+		keyspace = rb.routeOptions[0].eroute.Keyspace.Name
+	} else {
+		// This code is unreachable because the caller checks.
+		return false
+	}
 
 	for _, node := range nodes {
+		samePlan := true
 		inSubQuery := false
 		_ = sqlparser.Walk(func(node sqlparser.SQLNode) (kontinue bool, err error) {
 			switch nodeType := node.(type) {
@@ -165,35 +261,38 @@ func validateSubquerySamePlan(outerRoute *engine.Route, bldr builder, vschema VS
 				if !inSubQuery {
 					return true, nil
 				}
-				bldr, err := processSelect(nodeType, vschema, bldr)
-				if err != nil {
+				spb := newPrimitiveBuilder(pb.vschema, pb.jt)
+				if err := spb.processSelect(nodeType, pb.st); err != nil {
 					samePlan = false
 					return false, err
 				}
-				innerRoute, ok := bldr.(*route)
+				innerRoute, ok := spb.bldr.(*route)
 				if !ok {
 					samePlan = false
 					return false, errors.New("dummy")
 				}
-				if innerRoute.ERoute.Keyspace.Name != outerRoute.Keyspace.Name {
+				if !innerRoute.removeOptionsWithUnmatchedKeyspace(keyspace) {
 					samePlan = false
 					return false, errors.New("dummy")
+				}
+				for _, sub := range innerRoute.routeOptions[0].substitutions {
+					*sub.oldExpr = *sub.newExpr
 				}
 			case *sqlparser.Union:
 				if !inSubQuery {
 					return true, nil
 				}
-				bldr, err := processUnion(nodeType, vschema, nil)
-				if err != nil {
+				spb := newPrimitiveBuilder(pb.vschema, pb.jt)
+				if err := spb.processUnion(nodeType, pb.st); err != nil {
 					samePlan = false
 					return false, err
 				}
-				innerRoute, ok := bldr.(*route)
+				innerRoute, ok := spb.bldr.(*route)
 				if !ok {
 					samePlan = false
 					return false, errors.New("dummy")
 				}
-				if innerRoute.ERoute.Keyspace.Name != outerRoute.Keyspace.Name {
+				if !innerRoute.removeOptionsWithUnmatchedKeyspace(keyspace) {
 					samePlan = false
 					return false, errors.New("dummy")
 				}

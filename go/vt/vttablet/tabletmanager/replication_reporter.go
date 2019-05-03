@@ -22,11 +22,14 @@ import (
 	"html/template"
 	"time"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/vt/vterrors"
+
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/vt/health"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/vt/health"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/mysqlctl"
 )
 
 var (
@@ -60,14 +63,18 @@ func (r *replicationReporter) Report(isSlaveType, shouldQueryServiceBeRunning bo
 		if !r.agent.slaveStopped() {
 			// As far as we've been told, it isn't stopped on purpose,
 			// so let's try to start it.
-			log.Infof("Slave is stopped. Trying to reconnect to master...")
-			ctx, cancel := context.WithTimeout(r.agent.batchCtx, 5*time.Second)
-			if err := repairReplication(ctx, r.agent); err != nil {
-				log.Infof("Failed to reconnect to master: %v", err)
+			if *mysqlctl.DisableActiveReparents {
+				log.Infof("Slave is stopped. Running with --disable_active_reparents so will not try to reconnect to master...")
+			} else {
+				log.Infof("Slave is stopped. Trying to reconnect to master...")
+				ctx, cancel := context.WithTimeout(r.agent.batchCtx, 5*time.Second)
+				if err := repairReplication(ctx, r.agent); err != nil {
+					log.Infof("Failed to reconnect to master: %v", err)
+				}
+				cancel()
+				// Check status again.
+				status, statusErr = r.agent.MysqlDaemon.SlaveStatus()
 			}
-			cancel()
-			// Check status again.
-			status, statusErr = r.agent.MysqlDaemon.SlaveStatus()
 		}
 	}
 	if statusErr != nil {
@@ -104,8 +111,13 @@ func (r *replicationReporter) HTMLName() template.HTML {
 // repairReplication tries to connect this slave to whoever is
 // the current master of the shard, and start replicating.
 func repairReplication(ctx context.Context, agent *ActionAgent) error {
+	if *mysqlctl.DisableActiveReparents {
+		return fmt.Errorf("can't repair replication with --disable_active_reparents")
+	}
+
 	ts := agent.TopoServer
 	tablet := agent.Tablet()
+
 	si, err := ts.GetShard(ctx, tablet.Keyspace, tablet.Shard)
 	if err != nil {
 		return err
@@ -113,7 +125,26 @@ func repairReplication(ctx context.Context, agent *ActionAgent) error {
 	if !si.HasMaster() {
 		return fmt.Errorf("no master tablet for shard %v/%v", tablet.Keyspace, tablet.Shard)
 	}
-	return agent.setMasterLocked(ctx, si.MasterAlias, 0, true)
+
+	// If Orchestrator is configured and if Orchestrator is actively reparenting, we should not repairReplication
+	if agent.orc != nil {
+		re, err := agent.orc.InActiveShardRecovery(tablet)
+		if err != nil {
+			return err
+		}
+		if re {
+			return fmt.Errorf("orchestrator actively reparenting shard %v, skipping repairReplication", si)
+		}
+
+		// Before repairing replication, tell Orchestrator to enter maintenance mode for this tablet and to
+		// lock any other actions on this tablet by Orchestrator.
+		if err := agent.orc.BeginMaintenance(agent.Tablet(), "vttablet has been told to StopSlave"); err != nil {
+			log.Warningf("Orchestrator BeginMaintenance failed: %v", err)
+			return vterrors.Wrap(err, "orchestrator BeginMaintenance failed, skipping repairReplication")
+		}
+	}
+
+	return agent.setMasterRepairReplication(ctx, si.MasterAlias, 0, true)
 }
 
 func registerReplicationReporter(agent *ActionAgent) {

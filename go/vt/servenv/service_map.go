@@ -19,9 +19,8 @@ package servenv
 import (
 	"flag"
 
-	log "github.com/golang/glog"
-
-	"github.com/youtube/vitess/go/flagutil"
+	"vitess.io/vitess/go/flagutil"
+	"vitess.io/vitess/go/vt/log"
 )
 
 var (
@@ -36,7 +35,7 @@ var (
 
 func init() {
 	flag.Var(&serviceMapFlag, "service_map", "comma separated list of services to enable (or disable if prefixed with '-') Example: grpc-vtworker")
-	onInit(func() {
+	OnInit(func() {
 		updateServiceMap()
 	})
 }

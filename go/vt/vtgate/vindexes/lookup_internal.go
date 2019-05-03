@@ -22,9 +22,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sqltypes"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 // lookupInternal implements the functions for the Lookup vindexes.
@@ -50,7 +50,7 @@ func (lkp *lookupInternal) Init(lookupQueryParams map[string]string, autocommit,
 	lkp.Upsert = upsert
 
 	// TODO @rafael: update sel and ver to support multi column vindexes. This will be done
-	// as part of face 2 of https://github.com/youtube/vitess/issues/3481
+	// as part of face 2 of https://github.com/vitessio/vitess/issues/3481
 	// For now multi column behaves as a single column for Map and Verify operations
 	lkp.sel = fmt.Sprintf("select %s from %s where %s = :%s", lkp.To, lkp.Table, lkp.FromColumns[0], lkp.FromColumns[0])
 	lkp.ver = fmt.Sprintf("select %s from %s where %s = :%s and %s = :%s", lkp.FromColumns[0], lkp.Table, lkp.FromColumns[0], lkp.FromColumns[0], lkp.To, lkp.To)
@@ -114,6 +114,15 @@ func (lkp *lookupInternal) Verify(vcursor VCursor, ids, values []sqltypes.Value)
 // Create(vcursor, [[value_a0, value_b0,], [value_a1, value_b1]], [binary(value_c0), binary(value_c1)])
 // Notice that toValues contains the computed binary value of the keyspace_id.
 func (lkp *lookupInternal) Create(vcursor VCursor, rowsColValues [][]sqltypes.Value, toValues []sqltypes.Value, ignoreMode bool) error {
+	if len(rowsColValues) == 0 {
+		// This code is unreachable. It's just a failsafe.
+		return nil
+	}
+	// We only need to check the first row. Number of cols per row
+	// is guaranteed by the engine to be uniform.
+	if len(rowsColValues[0]) != len(lkp.FromColumns) {
+		return fmt.Errorf("lookup.Create: column vindex count does not match the columns in the lookup: %d vs %v", len(rowsColValues[0]), lkp.FromColumns)
+	}
 	buf := new(bytes.Buffer)
 	if ignoreMode {
 		fmt.Fprintf(buf, "insert ignore into %s(", lkp.Table)
@@ -180,6 +189,15 @@ func (lkp *lookupInternal) Delete(vcursor VCursor, rowsColValues [][]sqltypes.Va
 	// In autocommit mode, it's not safe to delete. So, it's a no-op.
 	if lkp.Autocommit {
 		return nil
+	}
+	if len(rowsColValues) == 0 {
+		// This code is unreachable. It's just a failsafe.
+		return nil
+	}
+	// We only need to check the first row. Number of cols per row
+	// is guaranteed by the engine to be uniform.
+	if len(rowsColValues[0]) != len(lkp.FromColumns) {
+		return fmt.Errorf("lookup.Delete: column vindex count does not match the columns in the lookup: %d vs %v", len(rowsColValues[0]), lkp.FromColumns)
 	}
 	for _, column := range rowsColValues {
 		bindVars := make(map[string]*querypb.BindVariable, len(rowsColValues))

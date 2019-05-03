@@ -24,22 +24,21 @@ import (
 
 	"golang.org/x/net/context"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sync2"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/mysqlctl"
+	"vitess.io/vitess/go/vt/sqlparser"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/sync2"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/mysqlctl"
-	"github.com/youtube/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vttablet/queryservice"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
-
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 var (
@@ -74,7 +73,7 @@ type explainTablet struct {
 func newTablet(opts *Options, t *topodatapb.Tablet) *explainTablet {
 	db := fakesqldb.New(nil)
 
-	config := tabletenv.DefaultQsConfig
+	config := tabletenv.Config
 	if opts.ExecutionMode == ModeTwoPC {
 		config.TwoPCCoordinatorAddress = "XXX"
 		config.TwoPCAbandonAge = 1.0
@@ -89,15 +88,12 @@ func newTablet(opts *Options, t *topodatapb.Tablet) *explainTablet {
 
 	tablet.QueryService = queryservice.Wrap(
 		nil,
-		func(ctx context.Context, target *querypb.Target, conn queryservice.QueryService, name string, inTransaction bool, inner func(context.Context, *querypb.Target, queryservice.QueryService) (error, bool)) error {
+		func(ctx context.Context, target *querypb.Target, conn queryservice.QueryService, name string, inTransaction bool, inner func(context.Context, *querypb.Target, queryservice.QueryService) (bool, error)) error {
 			return fmt.Errorf("explainTablet does not implement %s", name)
 		},
 	)
 
-	dbcfgs := dbconfigs.DBConfigs{
-		App:           *db.ConnParams(),
-		SidecarDBName: "_vt",
-	}
+	dbcfgs := dbconfigs.NewTestDBConfigs(*db.ConnParams(), *db.ConnParams(), "")
 	cnf := mysqlctl.NewMycnf(22222, 6802)
 	cnf.ServerID = 33333
 
@@ -121,6 +117,11 @@ var _ queryservice.QueryService = (*explainTablet)(nil) // compile-time interfac
 func (t *explainTablet) Begin(ctx context.Context, target *querypb.Target, options *querypb.ExecuteOptions) (int64, error) {
 	t.mu.Lock()
 	t.currentTime = batchTime.Wait()
+	t.tabletQueries = append(t.tabletQueries, &TabletQuery{
+		Time: t.currentTime,
+		SQL:  "begin",
+	})
+
 	t.mu.Unlock()
 
 	return t.tsv.Begin(ctx, target, options)
@@ -130,7 +131,12 @@ func (t *explainTablet) Begin(ctx context.Context, target *querypb.Target, optio
 func (t *explainTablet) Commit(ctx context.Context, target *querypb.Target, transactionID int64) error {
 	t.mu.Lock()
 	t.currentTime = batchTime.Wait()
+	t.tabletQueries = append(t.tabletQueries, &TabletQuery{
+		Time: t.currentTime,
+		SQL:  "commit",
+	})
 	t.mu.Unlock()
+
 	return t.tsv.Commit(ctx, target, transactionID)
 }
 
@@ -224,11 +230,11 @@ func (t *explainTablet) ExecuteBatch(ctx context.Context, target *querypb.Target
 	// Since the query is simulated being "sent" over the wire we need to
 	// copy the bindVars into the executor to avoid a data race.
 	for _, query := range queries {
-		bindVariables := sqltypes.CopyBindVariables(query.BindVariables)
+		query.BindVariables = sqltypes.CopyBindVariables(query.BindVariables)
 		t.tabletQueries = append(t.tabletQueries, &TabletQuery{
 			Time:     t.currentTime,
 			SQL:      query.Sql,
-			BindVars: bindVariables,
+			BindVars: query.BindVariables,
 		})
 	}
 	t.mu.Unlock()
@@ -382,7 +388,7 @@ func initTabletEnvironment(ddls []*sqlparser.DDL, opts *Options) error {
 
 	showTableRows := make([][]sqltypes.Value, 0, 4)
 	for _, ddl := range ddls {
-		table := ddl.NewName.Name.String()
+		table := ddl.Table.Name.String()
 		showTableRows = append(showTableRows, mysql.BaseShowTablesRow(table, false, ""))
 	}
 	schemaQueries[mysql.BaseShowTables] = &sqltypes.Result{
@@ -392,15 +398,24 @@ func initTabletEnvironment(ddls []*sqlparser.DDL, opts *Options) error {
 	}
 
 	for i, ddl := range ddls {
-		table := ddl.NewName.Name.String()
+		table := sqlparser.String(ddl.Table.Name)
 		schemaQueries[mysql.BaseShowTablesForTable(table)] = &sqltypes.Result{
 			Fields:       mysql.BaseShowTablesFields,
 			RowsAffected: 1,
 			Rows:         [][]sqltypes.Value{showTableRows[i]},
 		}
 
+		if ddl.OptLike != nil {
+			likeTable := ddl.OptLike.LikeTable.Name.String()
+			if _, ok := schemaQueries["describe "+likeTable]; !ok {
+				return fmt.Errorf("check your schema, table[%s] doesnt exist", likeTable)
+			}
+			schemaQueries["show index from "+table] = schemaQueries["show index from "+likeTable]
+			schemaQueries["describe "+table] = schemaQueries["describe "+likeTable]
+			schemaQueries["select * from "+table+" where 1 != 1"] = schemaQueries["select * from "+likeTable+" where 1 != 1"]
+			continue
+		}
 		pkColumns := make(map[string]bool)
-
 		indexRows := make([][]sqltypes.Value, 0, 4)
 		for _, idx := range ddl.TableSpec.Indexes {
 			for i, col := range idx.Columns {
@@ -423,7 +438,7 @@ func initTabletEnvironment(ddls []*sqlparser.DDL, opts *Options) error {
 		tableColumns[table] = make(map[string]querypb.Type)
 
 		for _, col := range ddl.TableSpec.Columns {
-			colName := col.Name.String()
+			colName := strings.ToLower(col.Name.String())
 			defaultVal := ""
 			if col.Type.Default != nil {
 				defaultVal = sqlparser.String(col.Type.Default)
@@ -496,7 +511,6 @@ func (t *explainTablet) HandleQuery(c *mysql.Conn, query string, callback func(*
 		switch node := selStmt.From[0].(type) {
 		case *sqlparser.AliasedTableExpr:
 			table = sqlparser.GetTableName(node.Expr)
-			break
 		}
 
 		// For complex select queries just return an empty result
@@ -506,9 +520,10 @@ func (t *explainTablet) HandleQuery(c *mysql.Conn, query string, callback func(*
 			return callback(&sqltypes.Result{})
 		}
 
-		colTypeMap := tableColumns[table.String()]
-		if colTypeMap == nil {
-			return fmt.Errorf("unable to resolve table name %s", table.String())
+		tableName := sqlparser.String(table)
+		colTypeMap := tableColumns[tableName]
+		if colTypeMap == nil && tableName != "dual" {
+			return fmt.Errorf("unable to resolve table name %s", tableName)
 		}
 
 		colNames := make([]string, 0, 4)
@@ -518,19 +533,17 @@ func (t *explainTablet) HandleQuery(c *mysql.Conn, query string, callback func(*
 			case *sqlparser.AliasedExpr:
 				switch node := node.Expr.(type) {
 				case *sqlparser.ColName:
-					col := node.Name.String()
+					col := strings.ToLower(node.Name.String())
 					colType := colTypeMap[col]
 					if colType == querypb.Type_NULL_TYPE {
 						return fmt.Errorf("invalid column %s", col)
 					}
 					colNames = append(colNames, col)
 					colTypes = append(colTypes, colType)
-					break
 				case *sqlparser.FuncExpr:
 					// As a shortcut, functions are integral types
 					colNames = append(colNames, sqlparser.String(node))
 					colTypes = append(colTypes, querypb.Type_INT32)
-					break
 				case *sqlparser.SQLVal:
 					colNames = append(colNames, sqlparser.String(node))
 					switch node.Type {
@@ -549,11 +562,9 @@ func (t *explainTablet) HandleQuery(c *mysql.Conn, query string, callback func(*
 					default:
 						return fmt.Errorf("unsupported sql value %s", sqlparser.String(node))
 					}
-					break
 				default:
 					return fmt.Errorf("unsupported select expression %s", sqlparser.String(node))
 				}
-				break
 			case *sqlparser.StarExpr:
 				for col, colType := range colTypeMap {
 					colNames = append(colNames, col)
@@ -592,15 +603,12 @@ func (t *explainTablet) HandleQuery(c *mysql.Conn, query string, callback func(*
 		resultJSON, _ := json.MarshalIndent(result, "", "    ")
 		log.V(100).Infof("query %s result %s\n", query, string(resultJSON))
 
-		break
 	case sqlparser.StmtBegin, sqlparser.StmtCommit, sqlparser.StmtSet, sqlparser.StmtShow:
 		result = &sqltypes.Result{}
-		break
 	case sqlparser.StmtInsert, sqlparser.StmtReplace, sqlparser.StmtUpdate, sqlparser.StmtDelete:
 		result = &sqltypes.Result{
 			RowsAffected: 1,
 		}
-		break
 	default:
 		return fmt.Errorf("unsupported query %s", query)
 	}

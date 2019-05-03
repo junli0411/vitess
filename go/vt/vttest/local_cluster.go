@@ -30,13 +30,12 @@ import (
 	"strings"
 	"unicode"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/log"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqltypes"
-
-	vschemapb "github.com/youtube/vitess/go/vt/proto/vschema"
-	vttestpb "github.com/youtube/vitess/go/vt/proto/vttest"
+	vschemapb "vitess.io/vitess/go/vt/proto/vschema"
+	vttestpb "vitess.io/vitess/go/vt/proto/vttest"
 )
 
 // Config are the settings used to configure the self-contained Vitess cluster.
@@ -67,6 +66,11 @@ type Config struct {
 	// If no schema is found in SchemaDir, default to this location.
 	DefaultSchemaDir string
 
+	// DataDir is the directory where the data files will be placed.
+	// If no directory is specified a random directory will be used
+	// under VTDATAROOT.
+	DataDir string
+
 	// Charset is the default charset used by MySQL
 	Charset string
 
@@ -92,6 +96,11 @@ type Config struct {
 	// initialize the mysqld instance in the cluster. Note that some environments
 	// do not suppport initialization through snapshot files.
 	SnapshotFile string
+
+	// TransactionMode is SINGLE, MULTI or TWOPC
+	TransactionMode string
+
+	TransactionTimeout float64
 }
 
 // InitSchemas is a shortcut for tests that just want to setup a single
@@ -414,6 +423,7 @@ func (db *LocalCluster) JSONConfig() interface{} {
 		"port":               db.vt.Port,
 		"socket":             db.mysql.UnixSocket(),
 		"vtcombo_mysql_port": db.Env.PortForProtocol("vtcombo_mysql_port", ""),
+		"mysql":              db.Env.PortForProtocol("mysql", ""),
 	}
 
 	if grpc := db.vt.PortGrpc; grpc != 0 {

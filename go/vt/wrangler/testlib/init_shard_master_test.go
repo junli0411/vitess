@@ -24,17 +24,17 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
-	"github.com/youtube/vitess/go/vt/wrangler"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
+	"vitess.io/vitess/go/vt/wrangler"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // TestInitMasterShard is the good scenario test, where everything
@@ -58,10 +58,12 @@ func TestInitMasterShard(t *testing.T) {
 	// Master: set a plausible ReplicationPosition to return,
 	// and expect to add entry in _vt.reparent_journal
 	master.FakeMysqlDaemon.CurrentMasterPosition = mysql.Position{
-		GTIDSet: mysql.MariadbGTID{
-			Domain:   5,
-			Server:   456,
-			Sequence: 890,
+		GTIDSet: mysql.MariadbGTIDSet{
+			mysql.MariadbGTID{
+				Domain:   5,
+				Server:   456,
+				Sequence: 890,
+			},
 		},
 	}
 	master.FakeMysqlDaemon.ReadOnly = true
@@ -186,10 +188,12 @@ func TestInitMasterShardOneSlaveFails(t *testing.T) {
 	// Master: set a plausible ReplicationPosition to return,
 	// and expect to add entry in _vt.reparent_journal
 	master.FakeMysqlDaemon.CurrentMasterPosition = mysql.Position{
-		GTIDSet: mysql.MariadbGTID{
-			Domain:   5,
-			Server:   456,
-			Sequence: 890,
+		GTIDSet: mysql.MariadbGTIDSet{
+			mysql.MariadbGTID{
+				Domain:   5,
+				Server:   456,
+				Sequence: 890,
+			},
 		},
 	}
 	master.FakeMysqlDaemon.ReadOnly = true

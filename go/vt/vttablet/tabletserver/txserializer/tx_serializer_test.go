@@ -27,19 +27,19 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/streamlog"
-	"github.com/youtube/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/streamlog"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 func resetVariables() {
-	waits.Reset()
-	waitsDryRun.Reset()
-	queueExceeded.Reset()
-	queueExceededDryRun.Reset()
-	globalQueueExceeded.Set(0)
-	globalQueueExceededDryRun.Set(0)
+	waits.ResetAll()
+	waitsDryRun.ResetAll()
+	queueExceeded.ResetAll()
+	queueExceededDryRun.ResetAll()
+	globalQueueExceeded.Reset()
+	globalQueueExceededDryRun.Reset()
 }
 
 func TestTxSerializer_NoHotRow(t *testing.T) {

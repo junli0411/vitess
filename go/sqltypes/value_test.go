@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 const (
@@ -257,7 +257,7 @@ func TestIntegralValue(t *testing.T) {
 	}
 }
 
-func TestInerfaceValue(t *testing.T) {
+func TestInterfaceValue(t *testing.T) {
 	testcases := []struct {
 		in  interface{}
 		out Value
@@ -344,7 +344,7 @@ func TestToBytesAndString(t *testing.T) {
 		TestValue(Int64, "1"),
 		TestValue(Int64, "12"),
 	} {
-		if b := v.ToBytes(); bytes.Compare(b, v.Raw()) != 0 {
+		if b := v.ToBytes(); !bytes.Equal(b, v.Raw()) {
 			t.Errorf("%v.ToBytes: %s, want %s", v, b, v.Raw())
 		}
 		if s := v.ToString(); s != string(v.Raw()) {
@@ -382,6 +382,10 @@ func TestEncode(t *testing.T) {
 		in:       TestValue(VarChar, "\x00'\"\b\n\r\t\x1A\\"),
 		outSQL:   "'\\0\\'\\\"\\b\\n\\r\\t\\Z\\\\'",
 		outASCII: "'ACciCAoNCRpc'",
+	}, {
+		in:       TestValue(Bit, "a"),
+		outSQL:   "b'01100001'",
+		outASCII: "'YQ=='",
 	}}
 	for _, tcase := range testcases {
 		buf := &bytes.Buffer{}

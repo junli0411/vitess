@@ -19,15 +19,16 @@ package tabletmanager
 import (
 	"time"
 
-	"github.com/youtube/vitess/go/vt/hook"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
 	"golang.org/x/net/context"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	replicationdatapb "github.com/youtube/vitess/go/vt/proto/replicationdata"
-	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/vt/hook"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/mysqlctl/tmutils"
+
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	replicationdatapb "vitess.io/vitess/go/vt/proto/replicationdata"
+	tabletmanagerdatapb "vitess.io/vitess/go/vt/proto/tabletmanagerdata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // RPCAgent defines the interface implemented by the Agent for RPCs.
@@ -65,6 +66,10 @@ type RPCAgent interface {
 
 	ApplySchema(ctx context.Context, change *tmutils.SchemaChange) (*tabletmanagerdatapb.SchemaChangeResult, error)
 
+	LockTables(ctx context.Context) error
+
+	UnlockTables(ctx context.Context) error
+
 	ExecuteFetchAsDba(ctx context.Context, query []byte, dbName string, maxrows int, disableBinlogs bool, reloadSchema bool) (*querypb.QueryResult, error)
 
 	ExecuteFetchAsAllPrivs(ctx context.Context, query []byte, dbName string, maxrows int, reloadSchema bool) (*querypb.QueryResult, error)
@@ -83,17 +88,15 @@ type RPCAgent interface {
 
 	StartSlave(ctx context.Context) error
 
+	StartSlaveUntilAfter(ctx context.Context, position string, waitTime time.Duration) error
+
 	TabletExternallyReparented(ctx context.Context, externalID string) error
 
 	GetSlaves(ctx context.Context) ([]string, error)
 
-	WaitBlpPosition(ctx context.Context, blpPosition *tabletmanagerdatapb.BlpPosition, waitTime time.Duration) error
-
-	StopBlp(ctx context.Context) ([]*tabletmanagerdatapb.BlpPosition, error)
-
-	StartBlp(ctx context.Context) error
-
-	RunBlpUntil(ctx context.Context, bpl []*tabletmanagerdatapb.BlpPosition, waitTime time.Duration) (string, error)
+	// VReplication API
+	VReplicationExec(ctx context.Context, query string) (*querypb.QueryResult, error)
+	VReplicationWaitForPos(ctx context.Context, id int, pos string) error
 
 	// Reparenting related functions
 
@@ -106,6 +109,8 @@ type RPCAgent interface {
 	InitSlave(ctx context.Context, parent *topodatapb.TabletAlias, replicationPosition string, timeCreatedNS int64) error
 
 	DemoteMaster(ctx context.Context) (string, error)
+
+	UndoDemoteMaster(ctx context.Context) error
 
 	PromoteSlaveWhenCaughtUp(ctx context.Context, replicationPosition string) (string, error)
 
@@ -121,7 +126,7 @@ type RPCAgent interface {
 
 	// Backup / restore related methods
 
-	Backup(ctx context.Context, concurrency int, logger logutil.Logger) error
+	Backup(ctx context.Context, concurrency int, logger logutil.Logger, allowMaster bool) error
 
 	RestoreFromBackup(ctx context.Context, logger logutil.Logger) error
 

@@ -23,15 +23,15 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/topo/topoproto"
 )
 
 type rateChange string
 
 const (
 	increasedRate rateChange = "increased"
-	decreasedRate            = "decreased"
-	unchangedRate            = "not changed"
+	decreasedRate rateChange = "decreased"
+	unchangedRate rateChange = "not changed"
 )
 
 type goodOrBadRate string

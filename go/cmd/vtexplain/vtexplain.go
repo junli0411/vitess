@@ -21,11 +21,11 @@ import (
 	"fmt"
 	"io/ioutil"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/exit"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/vtexplain"
+	"vitess.io/vitess/go/exit"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/vtexplain"
 )
 
 var (
@@ -40,6 +40,7 @@ var (
 	replicationMode = flag.String("replication-mode", "ROW", "The replication mode to simulate -- must be set to either ROW or STATEMENT")
 	normalize       = flag.Bool("normalize", false, "Whether to enable vtgate normalization")
 	outputMode      = flag.String("output-mode", "text", "Output in human-friendly text or json")
+	dbName          = flag.String("dbname", "", "Optional database target to override normal routing")
 
 	// vtexplainFlags lists all the flags that should show in usage
 	vtexplainFlags = []string{
@@ -53,6 +54,8 @@ var (
 		"sql-file",
 		"vschema",
 		"vschema-file",
+		"dbname",
+		"queryserver-config-passthrough-dmls",
 	}
 )
 
@@ -61,7 +64,7 @@ func usage() {
 	for _, name := range vtexplainFlags {
 		f := flag.Lookup(name)
 		if f == nil {
-			panic("unkown flag " + name)
+			panic("unknown flag " + name)
 		}
 		flagUsage(f)
 	}
@@ -114,12 +117,13 @@ func getFileParam(flag, flagFile, name string) (string, error) {
 	}
 	data, err := ioutil.ReadFile(flagFile)
 	if err != nil {
-		return "", fmt.Errorf("Cannot read file %v: %v", flagFile, err)
+		return "", fmt.Errorf("cannot read file %v: %v", flagFile, err)
 	}
 	return string(data), nil
 }
 
 func main() {
+	defer vtexplain.Stop()
 	defer exit.RecoverAll()
 	defer logutil.Flush()
 
@@ -153,6 +157,7 @@ func parseAndRun() error {
 		ReplicationMode: *replicationMode,
 		NumShards:       *numShards,
 		Normalize:       *normalize,
+		Target:          *dbName,
 	}
 
 	log.V(100).Infof("sql %s\n", sql)

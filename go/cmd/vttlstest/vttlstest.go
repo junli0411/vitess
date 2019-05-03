@@ -21,11 +21,10 @@ import (
 	"fmt"
 	"os"
 
-	log "github.com/golang/glog"
-
-	"github.com/youtube/vitess/go/exit"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/tlstest"
+	"vitess.io/vitess/go/exit"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/tlstest"
 )
 
 var doc = `
@@ -88,7 +87,7 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %v:\n", os.Args[0])
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, doc)
+		fmt.Fprint(os.Stderr, doc)
 	}
 	flag.Parse()
 	args := flag.Args()

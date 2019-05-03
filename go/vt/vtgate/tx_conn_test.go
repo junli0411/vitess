@@ -23,18 +23,20 @@ import (
 	"github.com/golang/protobuf/proto"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/discovery"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/sandboxconn"
+	"vitess.io/vitess/go/vt/discovery"
+	"vitess.io/vitess/go/vt/key"
+	"vitess.io/vitess/go/vt/srvtopo"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/sandboxconn"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vtgatepb "github.com/youtube/vitess/go/vt/proto/vtgate"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vtgatepb "vitess.io/vitess/go/vt/proto/vtgate"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 func TestTxConnBegin(t *testing.T) {
-	sc, sbc0, _ := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, _, rss0, _, _ := newTestTxConnEnv(t, "TestTxConn")
 	session := &vtgatepb.Session{}
 
 	// begin
@@ -45,7 +47,7 @@ func TestTxConnBegin(t *testing.T) {
 	if !proto.Equal(session, wantSession) {
 		t.Errorf("begin: %v, want %v", session, wantSession)
 	}
-	if _, err := sc.Execute(context.Background(), "query1", nil, "TestTxConn", []string{"0"}, topodatapb.TabletType_MASTER, NewSafeSession(session), false, nil); err != nil {
+	if _, err := sc.Execute(context.Background(), "query1", nil, rss0, topodatapb.TabletType_MASTER, NewSafeSession(session), false, nil); err != nil {
 		t.Error(err)
 	}
 
@@ -62,11 +64,10 @@ func TestTxConnBegin(t *testing.T) {
 }
 
 func TestTxConnBeginDisallowed(t *testing.T) {
-	sc, _, _ := newTestTxConnEnv("TestTxConn")
-	session := &vtgatepb.Session{}
+	sc, _, _, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 
 	sc.txConn.mode = vtgatepb.TransactionMode_SINGLE
-	session = &vtgatepb.Session{TransactionMode: vtgatepb.TransactionMode_MULTI}
+	session := &vtgatepb.Session{TransactionMode: vtgatepb.TransactionMode_MULTI}
 	err := sc.txConn.Begin(context.Background(), NewSafeSession(session))
 	wantErr := "requested transaction mode MULTI disallowed: vtgate must be started with --transaction_mode=MULTI (or TWOPC). Current transaction mode: SINGLE"
 	if err == nil || err.Error() != wantErr {
@@ -83,7 +84,7 @@ func TestTxConnBeginDisallowed(t *testing.T) {
 }
 
 func TestTxConnCommitRollbackIncorrectSession(t *testing.T) {
-	sc, _, _ := newTestTxConnEnv("TestTxConn")
+	sc, _, _, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 	// nil session
 	err := sc.txConn.Rollback(context.Background(), nil)
 	if err != nil {
@@ -99,12 +100,12 @@ func TestTxConnCommitRollbackIncorrectSession(t *testing.T) {
 }
 
 func TestTxConnCommitSuccess(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, sbc1, rss0, _, rss01 := newTestTxConnEnv(t, "TestTxConn")
 	sc.txConn.mode = vtgatepb.TransactionMode_MULTI
 
 	// Sequence the executes to ensure commit order
 	session := NewSafeSession(&vtgatepb.Session{InTransaction: true})
-	sc.Execute(context.Background(), "query1", nil, "TestTxConn", []string{"0"}, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss0, topodatapb.TabletType_MASTER, session, false, nil)
 	wantSession := vtgatepb.Session{
 		InTransaction: true,
 		ShardSessions: []*vtgatepb.Session_ShardSession{{
@@ -119,7 +120,7 @@ func TestTxConnCommitSuccess(t *testing.T) {
 	if !proto.Equal(session.Session, &wantSession) {
 		t.Errorf("Session:\n%+v, want\n%+v", *session.Session, wantSession)
 	}
-	sc.Execute(context.Background(), "query1", nil, "TestTxConn", []string{"0", "1"}, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss01, topodatapb.TabletType_MASTER, session, false, nil)
 	wantSession = vtgatepb.Session{
 		InTransaction: true,
 		ShardSessions: []*vtgatepb.Session_ShardSession{{
@@ -161,11 +162,11 @@ func TestTxConnCommitSuccess(t *testing.T) {
 }
 
 func TestTxConnCommit2PC(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConnCommit2PC")
+	sc, sbc0, sbc1, rss0, _, rss01 := newTestTxConnEnv(t, "TestTxConnCommit2PC")
 
 	session := NewSafeSession(&vtgatepb.Session{InTransaction: true})
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PC", []string{"0"}, topodatapb.TabletType_MASTER, session, false, nil)
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PC", []string{"0", "1"}, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss0, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss01, topodatapb.TabletType_MASTER, session, false, nil)
 	session.TransactionMode = vtgatepb.TransactionMode_TWOPC
 	if err := sc.txConn.Commit(context.Background(), session); err != nil {
 		t.Error(err)
@@ -188,9 +189,9 @@ func TestTxConnCommit2PC(t *testing.T) {
 }
 
 func TestTxConnCommit2PCOneParticipant(t *testing.T) {
-	sc, sbc0, _ := newTestTxConnEnv("TestTxConnCommit2PCOneParticipant")
+	sc, sbc0, _, rss0, _, _ := newTestTxConnEnv(t, "TestTxConnCommit2PCOneParticipant")
 	session := NewSafeSession(&vtgatepb.Session{InTransaction: true})
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PCOneParticipant", []string{"0"}, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss0, topodatapb.TabletType_MASTER, session, false, nil)
 	session.TransactionMode = vtgatepb.TransactionMode_TWOPC
 	if err := sc.txConn.Commit(context.Background(), session); err != nil {
 		t.Error(err)
@@ -201,11 +202,11 @@ func TestTxConnCommit2PCOneParticipant(t *testing.T) {
 }
 
 func TestTxConnCommit2PCCreateTransactionFail(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConnCommit2PCCreateTransactionFail")
+	sc, sbc0, sbc1, rss0, rss1, _ := newTestTxConnEnv(t, "TestTxConnCommit2PCCreateTransactionFail")
 
 	session := NewSafeSession(&vtgatepb.Session{InTransaction: true})
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PCCreateTransactionFail", []string{"0"}, topodatapb.TabletType_MASTER, session, false, nil)
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PCCreateTransactionFail", []string{"1"}, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss0, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss1, topodatapb.TabletType_MASTER, session, false, nil)
 
 	sbc0.MustFailCreateTransaction = 1
 	session.TransactionMode = vtgatepb.TransactionMode_TWOPC
@@ -238,11 +239,11 @@ func TestTxConnCommit2PCCreateTransactionFail(t *testing.T) {
 }
 
 func TestTxConnCommit2PCPrepareFail(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConnCommit2PCPrepareFail")
+	sc, sbc0, sbc1, rss0, _, rss01 := newTestTxConnEnv(t, "TestTxConnCommit2PCPrepareFail")
 
 	session := NewSafeSession(&vtgatepb.Session{InTransaction: true})
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PCPrepareFail", []string{"0"}, topodatapb.TabletType_MASTER, session, false, nil)
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PCPrepareFail", []string{"0", "1"}, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss0, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss01, topodatapb.TabletType_MASTER, session, false, nil)
 
 	sbc1.MustFailPrepare = 1
 	session.TransactionMode = vtgatepb.TransactionMode_TWOPC
@@ -269,11 +270,11 @@ func TestTxConnCommit2PCPrepareFail(t *testing.T) {
 }
 
 func TestTxConnCommit2PCStartCommitFail(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConnCommit2PCStartCommitFail")
+	sc, sbc0, sbc1, rss0, _, rss01 := newTestTxConnEnv(t, "TestTxConnCommit2PCStartCommitFail")
 
 	session := NewSafeSession(&vtgatepb.Session{InTransaction: true})
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PCStartCommitFail", []string{"0"}, topodatapb.TabletType_MASTER, session, false, nil)
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PCStartCommitFail", []string{"0", "1"}, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss0, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss01, topodatapb.TabletType_MASTER, session, false, nil)
 
 	sbc0.MustFailStartCommit = 1
 	session.TransactionMode = vtgatepb.TransactionMode_TWOPC
@@ -300,11 +301,11 @@ func TestTxConnCommit2PCStartCommitFail(t *testing.T) {
 }
 
 func TestTxConnCommit2PCCommitPreparedFail(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConnCommit2PCCommitPreparedFail")
+	sc, sbc0, sbc1, rss0, _, rss01 := newTestTxConnEnv(t, "TestTxConnCommit2PCCommitPreparedFail")
 
 	session := NewSafeSession(&vtgatepb.Session{InTransaction: true})
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PCCommitPreparedFail", []string{"0"}, topodatapb.TabletType_MASTER, session, false, nil)
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PCCommitPreparedFail", []string{"0", "1"}, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss0, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss01, topodatapb.TabletType_MASTER, session, false, nil)
 
 	sbc1.MustFailCommitPrepared = 1
 	session.TransactionMode = vtgatepb.TransactionMode_TWOPC
@@ -331,11 +332,11 @@ func TestTxConnCommit2PCCommitPreparedFail(t *testing.T) {
 }
 
 func TestTxConnCommit2PCConcludeTransactionFail(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConnCommit2PCConcludeTransactionFail")
+	sc, sbc0, sbc1, rss0, _, rss01 := newTestTxConnEnv(t, "TestTxConnCommit2PCConcludeTransactionFail")
 
 	session := NewSafeSession(&vtgatepb.Session{InTransaction: true})
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PCConcludeTransactionFail", []string{"0"}, topodatapb.TabletType_MASTER, session, false, nil)
-	sc.Execute(context.Background(), "query1", nil, "TestTxConnCommit2PCConcludeTransactionFail", []string{"0", "1"}, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss0, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss01, topodatapb.TabletType_MASTER, session, false, nil)
 
 	sbc0.MustFailConcludeTransaction = 1
 	session.TransactionMode = vtgatepb.TransactionMode_TWOPC
@@ -362,11 +363,11 @@ func TestTxConnCommit2PCConcludeTransactionFail(t *testing.T) {
 }
 
 func TestTxConnRollback(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, sbc1, rss0, _, rss01 := newTestTxConnEnv(t, "TxConnRollback")
 
 	session := NewSafeSession(&vtgatepb.Session{InTransaction: true})
-	sc.Execute(context.Background(), "query1", nil, "TestTxConn", []string{"0"}, topodatapb.TabletType_MASTER, session, false, nil)
-	sc.Execute(context.Background(), "query1", nil, "TestTxConn", []string{"0", "1"}, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss0, topodatapb.TabletType_MASTER, session, false, nil)
+	sc.Execute(context.Background(), "query1", nil, rss01, topodatapb.TabletType_MASTER, session, false, nil)
 	if err := sc.txConn.Rollback(context.Background(), session); err != nil {
 		t.Error(err)
 	}
@@ -383,7 +384,7 @@ func TestTxConnRollback(t *testing.T) {
 }
 
 func TestTxConnResolveOnPrepare(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, sbc1, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 
 	dtid := "TestTxConn:0:1234"
 	sbc0.ReadTransactionResults = []*querypb.TransactionMetadata{{
@@ -414,7 +415,7 @@ func TestTxConnResolveOnPrepare(t *testing.T) {
 }
 
 func TestTxConnResolveOnRollback(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, sbc1, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 
 	dtid := "TestTxConn:0:1234"
 	sbc0.ReadTransactionResults = []*querypb.TransactionMetadata{{
@@ -444,7 +445,7 @@ func TestTxConnResolveOnRollback(t *testing.T) {
 }
 
 func TestTxConnResolveOnCommit(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, sbc1, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 
 	dtid := "TestTxConn:0:1234"
 	sbc0.ReadTransactionResults = []*querypb.TransactionMetadata{{
@@ -474,7 +475,7 @@ func TestTxConnResolveOnCommit(t *testing.T) {
 }
 
 func TestTxConnResolveInvalidDTID(t *testing.T) {
-	sc, _, _ := newTestTxConnEnv("TestTxConn")
+	sc, _, _, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 
 	err := sc.txConn.Resolve(context.Background(), "abcd")
 	want := "invalid parts in dtid: abcd"
@@ -484,7 +485,7 @@ func TestTxConnResolveInvalidDTID(t *testing.T) {
 }
 
 func TestTxConnResolveReadTransactionFail(t *testing.T) {
-	sc, sbc0, _ := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, _, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 
 	dtid := "TestTxConn:0:1234"
 	sbc0.MustFailCodes[vtrpcpb.Code_INVALID_ARGUMENT] = 1
@@ -496,7 +497,7 @@ func TestTxConnResolveReadTransactionFail(t *testing.T) {
 }
 
 func TestTxConnResolveInternalError(t *testing.T) {
-	sc, sbc0, _ := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, _, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 
 	dtid := "TestTxConn:0:1234"
 	sbc0.ReadTransactionResults = []*querypb.TransactionMetadata{{
@@ -516,7 +517,7 @@ func TestTxConnResolveInternalError(t *testing.T) {
 }
 
 func TestTxConnResolveSetRollbackFail(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, sbc1, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 
 	dtid := "TestTxConn:0:1234"
 	sbc0.ReadTransactionResults = []*querypb.TransactionMetadata{{
@@ -549,7 +550,7 @@ func TestTxConnResolveSetRollbackFail(t *testing.T) {
 }
 
 func TestTxConnResolveRollbackPreparedFail(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, sbc1, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 
 	dtid := "TestTxConn:0:1234"
 	sbc0.ReadTransactionResults = []*querypb.TransactionMetadata{{
@@ -582,7 +583,7 @@ func TestTxConnResolveRollbackPreparedFail(t *testing.T) {
 }
 
 func TestTxConnResolveCommitPreparedFail(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, sbc1, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 
 	dtid := "TestTxConn:0:1234"
 	sbc0.ReadTransactionResults = []*querypb.TransactionMetadata{{
@@ -615,7 +616,7 @@ func TestTxConnResolveCommitPreparedFail(t *testing.T) {
 }
 
 func TestTxConnResolveConcludeTransactionFail(t *testing.T) {
-	sc, sbc0, sbc1 := newTestTxConnEnv("TestTxConn")
+	sc, sbc0, sbc1, _, _, _ := newTestTxConnEnv(t, "TestTxConn")
 
 	dtid := "TestTxConn:0:1234"
 	sbc0.ReadTransactionResults = []*querypb.TransactionMetadata{{
@@ -730,11 +731,25 @@ func TestTxConnMultiGoTargets(t *testing.T) {
 	}
 }
 
-func newTestTxConnEnv(name string) (sc *ScatterConn, sbc0, sbc1 *sandboxconn.SandboxConn) {
+func newTestTxConnEnv(t *testing.T, name string) (sc *ScatterConn, sbc0, sbc1 *sandboxconn.SandboxConn, rss0, rss1, rss01 []*srvtopo.ResolvedShard) {
 	createSandbox(name)
 	hc := discovery.NewFakeHealthCheck()
 	sc = newTestScatterConn(hc, new(sandboxTopo), "aa")
 	sbc0 = hc.AddTestTablet("aa", "0", 1, name, "0", topodatapb.TabletType_MASTER, true, 1, nil)
 	sbc1 = hc.AddTestTablet("aa", "1", 1, name, "1", topodatapb.TabletType_MASTER, true, 1, nil)
-	return sc, sbc0, sbc1
+	res := srvtopo.NewResolver(&sandboxTopo{}, sc.gateway, "aa")
+	var err error
+	rss0, err = res.ResolveDestination(context.Background(), name, topodatapb.TabletType_MASTER, key.DestinationShard("0"))
+	if err != nil {
+		t.Fatalf("ResolveDestination(0) failed: %v", err)
+	}
+	rss1, err = res.ResolveDestination(context.Background(), name, topodatapb.TabletType_MASTER, key.DestinationShard("1"))
+	if err != nil {
+		t.Fatalf("ResolveDestination(1) failed: %v", err)
+	}
+	rss01, err = res.ResolveDestination(context.Background(), name, topodatapb.TabletType_MASTER, key.DestinationShards([]string{"0", "1"}))
+	if err != nil {
+		t.Fatalf("ResolveDestination(0, 1) failed: %v", err)
+	}
+	return sc, sbc0, sbc1, rss0, rss1, rss01
 }

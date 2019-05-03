@@ -23,13 +23,12 @@ import (
 	"context"
 	"fmt"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vttablet/queryservice"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice"
-
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 // ProxySession holds session state for the proxy
@@ -78,11 +77,10 @@ func (mp *Proxy) Execute(ctx context.Context, session *ProxySession, sql string,
 		result, err = mp.executeOther(ctx, session, sql, bindVariables)
 	}
 
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return session, result, nil
+	// N.B. You must return session, even on error. Modeled after vtgate mysql plugin, the
+	// vtqueryserver plugin expects you to return a new or updated session and not drop it on the
+	// floor during an error.
+	return session, result, err
 }
 
 // Rollback rolls back the session
@@ -128,23 +126,13 @@ func (mp *Proxy) doRollback(ctx context.Context, session *ProxySession) error {
 
 // Set is currently ignored
 func (mp *Proxy) doSet(ctx context.Context, session *ProxySession, sql string, bindVariables map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
-	vals, charset, _, err := sqlparser.ExtractSetValues(sql)
+	vals, _, err := sqlparser.ExtractSetValues(sql)
 	if err != nil {
 		return nil, err
 	}
-	if len(vals) > 0 && charset != "" {
-		return nil, err
-	}
-
-	switch charset {
-	case "", "utf8", "utf8mb4", "latin1", "default":
-		break
-	default:
-		return nil, fmt.Errorf("unexpected value for charset: %v", charset)
-	}
 
 	for k, v := range vals {
-		switch k {
+		switch k.Key {
 		case "autocommit":
 			val, ok := v.(int64)
 			if !ok {
@@ -154,7 +142,7 @@ func (mp *Proxy) doSet(ctx context.Context, session *ProxySession, sql string, b
 			case 0:
 				session.Autocommit = false
 			case 1:
-				if session.TransactionID != 0 {
+				if !session.Autocommit && session.TransactionID != 0 {
 					if err := mp.doCommit(ctx, session); err != nil {
 						return nil, err
 					}
@@ -162,6 +150,17 @@ func (mp *Proxy) doSet(ctx context.Context, session *ProxySession, sql string, b
 				session.Autocommit = true
 			default:
 				return nil, fmt.Errorf("unexpected value for autocommit: %d", val)
+			}
+		case "charset", "names":
+			val, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("unexpected value type for charset/names: %T", v)
+			}
+			switch val {
+			case "", "utf8", "utf8mb4", "latin1", "default":
+				break
+			default:
+				return nil, fmt.Errorf("unexpected value for charset/names: %v", val)
 			}
 		default:
 			log.Warningf("Ignored inapplicable SET %v = %v", k, v)
@@ -174,14 +173,14 @@ func (mp *Proxy) doSet(ctx context.Context, session *ProxySession, sql string, b
 // executeSelect runs the given select statement
 func (mp *Proxy) executeSelect(ctx context.Context, session *ProxySession, sql string, bindVariables map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
 	if mp.normalize {
-		query, comments := sqlparser.SplitTrailingComments(sql)
+		query, comments := sqlparser.SplitMarginComments(sql)
 		stmt, err := sqlparser.Parse(query)
 		if err != nil {
 			return nil, err
 		}
 		sqlparser.Normalize(stmt, bindVariables, "vtp")
 		normalized := sqlparser.String(stmt)
-		sql = normalized + comments
+		sql = comments.Leading + normalized + comments.Trailing
 	}
 
 	return mp.qs.Execute(ctx, mp.target, sql, bindVariables, session.TransactionID, session.Options)
@@ -190,14 +189,14 @@ func (mp *Proxy) executeSelect(ctx context.Context, session *ProxySession, sql s
 // executeDML runs the given query handling autocommit semantics
 func (mp *Proxy) executeDML(ctx context.Context, session *ProxySession, sql string, bindVariables map[string]*querypb.BindVariable) (*sqltypes.Result, error) {
 	if mp.normalize {
-		query, comments := sqlparser.SplitTrailingComments(sql)
+		query, comments := sqlparser.SplitMarginComments(sql)
 		stmt, err := sqlparser.Parse(query)
 		if err != nil {
 			return nil, err
 		}
 		sqlparser.Normalize(stmt, bindVariables, "vtp")
 		normalized := sqlparser.String(stmt)
-		sql = normalized + comments
+		sql = comments.Leading + normalized + comments.Trailing
 	}
 
 	if session.TransactionID != 0 {

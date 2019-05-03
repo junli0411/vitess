@@ -29,6 +29,7 @@ import MySQLdb
 import environment
 import utils
 import tablet
+import warnings
 
 # single shard / 2 tablets
 shard_0_master = tablet.Tablet()
@@ -99,12 +100,15 @@ class TestMySQL(unittest.TestCase):
   """This test makes sure the MySQL server connector is correct.
   """
 
+  MYSQL_OPTION_MULTI_STATEMENTS_ON = 0
+  MYSQL_OPTION_MULTI_STATEMENTS_OFF = 1
+
   def test_mysql_connector(self):
     with open(table_acl_config, 'w') as fd:
       fd.write("""{
       "table_groups": [
           {
-             "table_names_or_prefixes": ["vt_insert_test"],
+             "table_names_or_prefixes": ["vt_insert_test", "dual"],
              "readers": ["vtgate client 1"],
              "writers": ["vtgate client 1"],
              "admins": ["vtgate client 1"]
@@ -143,6 +147,7 @@ class TestMySQL(unittest.TestCase):
     # start vtgate
     utils.VtGate(mysql_server=True).start(
         extra_args=['-mysql_auth_server_impl', 'static',
+                    '-mysql_server_query_timeout', '1s',
                     '-mysql_auth_server_static_file', mysql_auth_server_static])
     # We use gethostbyname('localhost') so we don't presume
     # of the IP format (travis is only IP v4, really).
@@ -156,6 +161,29 @@ class TestMySQL(unittest.TestCase):
     conn = MySQLdb.Connect(**params)
     cursor = conn.cursor()
     cursor.execute('select * from vt_insert_test', {})
+    cursor.close()
+
+    # Test multi-statement support. It should only work when
+    # COM_SET_OPTION has set the options to 0
+    conn.set_server_option(self.MYSQL_OPTION_MULTI_STATEMENTS_ON)
+    cursor = conn.cursor()
+    cursor.execute("select 1; select 2")
+    self.assertEquals(((1L,),), cursor.fetchall())
+    self.assertEquals(1, cursor.nextset())
+    self.assertEquals(((2L,),), cursor.fetchall())
+    self.assertEquals(None, cursor.nextset())
+    cursor.close()
+    conn.set_server_option(self.MYSQL_OPTION_MULTI_STATEMENTS_OFF)
+
+    # Multi-statement support should not work without the
+    # option enabled
+    cursor = conn.cursor()
+    try:
+        cursor.execute("select 1; select 2")
+        self.fail('Execute went through')
+    except MySQLdb.OperationalError, e:
+      s = str(e)
+      self.assertIn('syntax error', s)
     cursor.close()
 
     # verify that queries work end-to-end with large grpc messages
@@ -188,6 +216,75 @@ class TestMySQL(unittest.TestCase):
       self.assertIn('trying to send message larger than max', s)
 
     conn.close()
+
+    # 'vtgate client' this query should timeout
+    conn = MySQLdb.Connect(**params)
+    try:
+      cursor = conn.cursor()
+      cursor.execute('SELECT SLEEP(5)', {})
+      self.fail('Execute went through')
+    except MySQLdb.OperationalError, e:
+      s = str(e)
+      # 1317 is DeadlineExceeded error code
+      self.assertIn('1317', s)
+    conn.close()
+
+    # this query should fail due to the bogus field
+    conn = MySQLdb.Connect(**params)
+    try:
+      cursor = conn.cursor()
+      cursor.execute('SELECT invalid_field from vt_insert_test', {})
+      self.fail('Execute went through')
+    except MySQLdb.OperationalError, e:
+      s = str(e)
+      # 1054 is BadFieldError code
+      self.assertIn('1054', s)
+
+    # this query should trigger a warning not an error
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+
+      cursor.execute('SELECT /*vt+ SCATTER_ERRORS_AS_WARNINGS */ invalid_field from vt_insert_test', {})
+      if cursor.rowcount != 0:
+        self.fail('expected 0 rows got ' + str(cursor.rowcount))
+
+      if len(w) != 1:
+        print 'unexpected warnings: ', w
+
+    # and the next query should get the warnings
+    cursor.execute('SHOW WARNINGS', {})
+    if cursor.rowcount != 1:
+      print 'expected 1 warning row, got ' + str(cursor.rowcount)
+
+    for (_, code, message) in cursor:
+      self.assertEqual(code, 1054)
+      self.assertIn('errno 1054', message)
+      self.assertIn('Unknown column', message)
+
+    # test with a query timeout error
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+
+      cursor.execute('SELECT /*vt+ SCATTER_ERRORS_AS_WARNINGS QUERY_TIMEOUT_MS=1 */ sleep(1) from vt_insert_test', {})
+      if cursor.rowcount != 0:
+        self.fail('expected 0 rows got ' + str(cursor.rowcount))
+
+      if len(w) != 1:
+        print 'unexpected warnings: ', w
+
+    cursor.execute('SHOW WARNINGS', {})
+    if cursor.rowcount != 1:
+      print 'expected 1 warning row, got ' + str(cursor.rowcount)
+
+    for (_, code, message) in cursor:
+      self.assertEqual(code, 1317)
+      self.assertIn('context deadline exceeded', message)
+
+    # any non-show query clears the warnings
+    cursor.execute('SELECT 1 from vt_insert_test limit 1', {})
+    cursor.execute('SHOW WARNINGS', {})
+    if cursor.rowcount != 0:
+      print 'expected 0 warnings row, got ' + str(cursor.rowcount)
 
     # 'vtgate client 2' is not authorized to access vt_insert_test
     params['user'] = 'testuser2'

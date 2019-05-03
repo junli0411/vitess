@@ -26,13 +26,13 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/youtube/vitess/go/vt/status"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/status"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vschemapb "github.com/youtube/vitess/go/vt/proto/vschema"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vschemapb "vitess.io/vitess/go/vt/proto/vschema"
 )
 
 // TestGetSrvKeyspace will test we properly return updated SrvKeyspace.
@@ -49,7 +49,7 @@ func TestGetSrvKeyspace(t *testing.T) {
 
 	// Ask for a not-yet-created keyspace
 	_, err := rs.GetSrvKeyspace(context.Background(), "test_cell", "test_ks")
-	if err != topo.ErrNoNode {
+	if !topo.IsErrType(err, topo.NoNode) {
 		t.Fatalf("GetSrvKeyspace(not created) got unexpected error: %v", err)
 	}
 
@@ -105,8 +105,8 @@ func TestGetSrvKeyspace(t *testing.T) {
 	}
 	expiry = time.Now().Add(5 * time.Second)
 	for {
-		got, err = rs.GetSrvKeyspace(context.Background(), "test_cell", "test_ks")
-		if err == topo.ErrNoNode {
+		_, err = rs.GetSrvKeyspace(context.Background(), "test_cell", "test_ks")
+		if topo.IsErrType(err, topo.NoNode) {
 			break
 		}
 		if time.Now().After(expiry) {
@@ -138,7 +138,7 @@ func TestGetSrvKeyspace(t *testing.T) {
 	// Now simulate a topo service error and see that the last value is
 	// cached for at least half of the expected ttl.
 	errorTestStart := time.Now()
-	errorReqsBefore, _ := rs.counts.Counts()[errorCategory]
+	errorReqsBefore := rs.counts.Counts()[errorCategory]
 	forceErr := fmt.Errorf("test topo error")
 	factory.SetError(forceErr)
 
@@ -234,7 +234,7 @@ func TestGetSrvKeyspace(t *testing.T) {
 
 	// Check that the expected number of errors were counted during the
 	// interval
-	errorReqs, _ := rs.counts.Counts()[errorCategory]
+	errorReqs := rs.counts.Counts()[errorCategory]
 	expectedErrors := int64(time.Since(errorTestStart) / *srvTopoCacheRefresh)
 	if errorReqs-errorReqsBefore > expectedErrors {
 		t.Errorf("expected <= %v error requests got %d", expectedErrors, errorReqs-errorReqsBefore)
@@ -377,10 +377,10 @@ func TestGetSrvKeyspaceCreated(t *testing.T) {
 	expiry := time.Now().Add(5 * time.Second)
 	for {
 		got, err := rs.GetSrvKeyspace(context.Background(), "test_cell", "test_ks")
-		switch err {
-		case topo.ErrNoNode:
+		switch {
+		case topo.IsErrType(err, topo.NoNode):
 			// keep trying
-		case nil:
+		case err == nil:
 			// we got a value, see if it's good
 			if proto.Equal(want, got) {
 				return
@@ -419,7 +419,7 @@ func TestWatchSrvVSchema(t *testing.T) {
 
 	// WatchSrvVSchema won't return until it gets the initial value,
 	// which is not there, so we should get watchErr=topo.ErrNoNode.
-	if _, err := get(); err != topo.ErrNoNode {
+	if _, err := get(); !topo.IsErrType(err, topo.NoNode) {
 		t.Fatalf("WatchSrvVSchema didn't return topo.ErrNoNode at first, but got: %v", err)
 	}
 
@@ -469,7 +469,7 @@ func TestWatchSrvVSchema(t *testing.T) {
 	}
 	start = time.Now()
 	for {
-		if _, err := get(); err == topo.ErrNoNode {
+		if _, err := get(); topo.IsErrType(err, topo.NoNode) {
 			break
 		}
 		if time.Since(start) > 5*time.Second {

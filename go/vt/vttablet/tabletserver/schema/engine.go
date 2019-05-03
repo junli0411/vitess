@@ -19,27 +19,26 @@ package schema
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/acl"
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/timer"
-	"github.com/youtube/vitess/go/vt/concurrency"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/connpool"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/acl"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/timer"
+	"vitess.io/vitess/go/vt/concurrency"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/connpool"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 const maxTableCount = 10000
@@ -49,7 +48,7 @@ type notifier func(full map[string]*Table, created, altered, dropped []string)
 // Engine stores the schema info and performs operations that
 // keep itself up-to-date.
 type Engine struct {
-	dbconfigs dbconfigs.DBConfigs
+	dbconfigs *dbconfigs.DBConfigs
 
 	// mu protects the following fields.
 	mu         sync.Mutex
@@ -77,15 +76,23 @@ func NewEngine(checker connpool.MySQLChecker, config tabletenv.TabletConfig) *En
 		reloadTime: reloadTime,
 	}
 	schemaOnce.Do(func() {
-		stats.Publish("SchemaReloadTime", stats.DurationFunc(se.ticks.Interval))
-		_ = stats.NewMultiCountersFunc("TableRows", []string{"Table"}, se.getTableRows)
-		_ = stats.NewMultiCountersFunc("DataLength", []string{"Table"}, se.getDataLength)
-		_ = stats.NewMultiCountersFunc("IndexLength", []string{"Table"}, se.getIndexLength)
-		_ = stats.NewMultiCountersFunc("DataFree", []string{"Table"}, se.getDataFree)
-		_ = stats.NewMultiCountersFunc("MaxDataLength", []string{"Table"}, se.getMaxDataLength)
+		_ = stats.NewGaugeDurationFunc("SchemaReloadTime", "vttablet keeps table schemas in its own memory and periodically refreshes it from MySQL. This config controls the reload time.", se.ticks.Interval)
+		_ = stats.NewGaugesFuncWithMultiLabels("TableRows", "table rows created in tabletserver", []string{"Table"}, se.getTableRows)
+		_ = stats.NewGaugesFuncWithMultiLabels("DataLength", "data length in tabletserver", []string{"Table"}, se.getDataLength)
+		_ = stats.NewGaugesFuncWithMultiLabels("IndexLength", "index length in tabletserver", []string{"Table"}, se.getIndexLength)
+		_ = stats.NewGaugesFuncWithMultiLabels("DataFree", "data free in tabletserver", []string{"Table"}, se.getDataFree)
+		_ = stats.NewGaugesFuncWithMultiLabels("MaxDataLength", "max data length in tabletserver", []string{"Table"}, se.getMaxDataLength)
 
 		http.Handle("/debug/schema", se)
 		http.HandleFunc("/schemaz", func(w http.ResponseWriter, r *http.Request) {
+			// Ensure schema engine is Open. If vttablet came up in a non_serving role,
+			// the schema engine may not have been initialized.
+			err := se.Open()
+			if err != nil {
+				w.Write([]byte(err.Error()))
+				return
+			}
+
 			schemazHandler(se.GetSchema(), w, r)
 		})
 	})
@@ -93,7 +100,7 @@ func NewEngine(checker connpool.MySQLChecker, config tabletenv.TabletConfig) *En
 }
 
 // InitDBConfig must be called before Open.
-func (se *Engine) InitDBConfig(dbcfgs dbconfigs.DBConfigs) {
+func (se *Engine) InitDBConfig(dbcfgs *dbconfigs.DBConfigs) {
 	se.dbconfigs = dbcfgs
 }
 
@@ -106,9 +113,9 @@ func (se *Engine) Open() error {
 		return nil
 	}
 	start := time.Now()
-	defer log.Infof("Time taken to load the schema: %v", time.Now().Sub(start))
+	defer log.Infof("Time taken to load the schema: %v", time.Since(start))
 	ctx := tabletenv.LocalContext()
-	dbaParams := &se.dbconfigs.Dba
+	dbaParams := se.dbconfigs.DbaWithDB()
 	se.conns.Open(dbaParams, dbaParams, dbaParams)
 
 	conn, err := se.conns.Get(ctx)
@@ -242,7 +249,7 @@ func (se *Engine) Reload(ctx context.Context) error {
 		return curTime, tableData, nil
 	}()
 	if err != nil {
-		return fmt.Errorf("could not get table list for reload: %v", err)
+		return vterrors.Wrap(err, "could not get table list for reload")
 	}
 
 	// Reload any tables that have changed. We try every table even if some fail,
@@ -256,21 +263,12 @@ func (se *Engine) Reload(ctx context.Context) error {
 		createTime, _ := sqltypes.ToInt64(row[2])
 		// Check if we know about the table or it has been recreated.
 		if _, ok := se.tables[tableName]; !ok || createTime >= se.lastChange {
-			func() {
-				// Unlock so TableWasCreatedOrAltered can lock.
-				se.mu.Unlock()
-				defer se.mu.Lock()
-				log.Infof("Reloading schema for table: %s", tableName)
-				rec.RecordError(se.TableWasCreatedOrAltered(ctx, tableName))
-			}()
-			// In case someone closed se when lock was released.
-			if !se.isOpen {
-				return nil
-			}
-			continue
+			log.Infof("Reloading schema for table: %s", tableName)
+			rec.RecordError(se.tableWasCreatedOrAltered(ctx, tableName))
+		} else {
+			// Only update table_rows, data_length, index_length, max_data_length
+			se.tables[tableName].SetMysqlStats(row[4], row[5], row[6], row[7], row[8])
 		}
-		// Only update table_rows, data_length, index_length, max_data_length
-		se.tables[tableName].SetMysqlStats(row[4], row[5], row[6], row[7], row[8])
 	}
 	se.lastChange = curTime
 
@@ -284,7 +282,7 @@ func (se *Engine) Reload(ctx context.Context) error {
 		dropped = append(dropped, tableName)
 	}
 	// We only need to broadcast dropped tables because
-	// TableWasCreatedOrAltered will broadcast the other changes.
+	// tableWasCreatedOrAltered will broadcast the other changes.
 	if len(dropped) > 0 {
 		se.broadcast(nil, nil, dropped)
 	}
@@ -306,10 +304,9 @@ func (se *Engine) mysqlTime(ctx context.Context, conn *connpool.DBConn) (int64, 
 	return t, nil
 }
 
-// TableWasCreatedOrAltered must be called if a DDL was applied to that table.
-func (se *Engine) TableWasCreatedOrAltered(ctx context.Context, tableName string) error {
-	se.mu.Lock()
-	defer se.mu.Unlock()
+// tableWasCreatedOrAltered must be called if a DDL was applied to that table.
+// the se.mu mutex _must_ be locked before entering this method
+func (se *Engine) tableWasCreatedOrAltered(ctx context.Context, tableName string) error {
 	if !se.isOpen {
 		return vterrors.Errorf(vtrpcpb.Code_INTERNAL, "DDL called on closed schema")
 	}
@@ -322,7 +319,7 @@ func (se *Engine) TableWasCreatedOrAltered(ctx context.Context, tableName string
 	tableData, err := conn.Exec(ctx, mysql.BaseShowTablesForTable(tableName), 1, false)
 	if err != nil {
 		tabletenv.InternalErrors.Add("Schema", 1)
-		return vterrors.Errorf(vtrpcpb.Code_UNKNOWN, "TableWasCreatedOrAltered: information_schema query failed for table %s: %v", tableName, err)
+		return vterrors.Errorf(vtrpcpb.Code_UNKNOWN, "tableWasCreatedOrAltered: information_schema query failed for table %s: %v", tableName, err)
 	}
 	if len(tableData.Rows) != 1 {
 		// This can happen if DDLs race with each other.
@@ -337,7 +334,7 @@ func (se *Engine) TableWasCreatedOrAltered(ctx context.Context, tableName string
 	)
 	if err != nil {
 		tabletenv.InternalErrors.Add("Schema", 1)
-		return vterrors.Errorf(vtrpcpb.Code_UNKNOWN, "TableWasCreatedOrAltered: failed to load table %s: %v", tableName, err)
+		return vterrors.Errorf(vtrpcpb.Code_UNKNOWN, "tableWasCreatedOrAltered: failed to load table %s: %v", tableName, err)
 	}
 	// table_rows, data_length, index_length, max_data_length
 	table.SetMysqlStats(row[4], row[5], row[6], row[7], row[8])
@@ -407,7 +404,7 @@ func (se *Engine) GetTable(tableName sqlparser.TableIdent) *Table {
 }
 
 // GetSchema returns the current The Tables are a shared
-// data strucutre and must be treated as read-only.
+// data structure and must be treated as read-only.
 func (se *Engine) GetSchema() map[string]*Table {
 	se.mu.Lock()
 	defer se.mu.Unlock()
@@ -494,6 +491,14 @@ func (se *Engine) ServeHTTP(response http.ResponseWriter, request *http.Request)
 }
 
 func (se *Engine) handleHTTPSchema(response http.ResponseWriter, request *http.Request) {
+	// Ensure schema engine is Open. If vttablet came up in a non_serving role,
+	// the schema engine may not have been initialized.
+	err := se.Open()
+	if err != nil {
+		response.Write([]byte(err.Error()))
+		return
+	}
+
 	response.Header().Set("Content-Type", "application/json; charset=utf-8")
 	b, err := json.MarshalIndent(se.GetSchema(), "", " ")
 	if err != nil {

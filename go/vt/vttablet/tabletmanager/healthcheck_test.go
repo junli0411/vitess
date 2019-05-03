@@ -18,7 +18,6 @@ package tabletmanager
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"html/template"
 	"reflect"
@@ -28,17 +27,17 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/binlog/binlogplayer"
-	"github.com/youtube/vitess/go/vt/health"
-	"github.com/youtube/vitess/go/vt/mysqlctl/fakemysqldaemon"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletservermock"
+	"vitess.io/vitess/go/vt/health"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/mysqlctl/fakemysqldaemon"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/topotools"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver"
+	"vitess.io/vitess/go/vt/vttablet/tabletservermock"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 func TestHealthRecordDeduplication(t *testing.T) {
@@ -128,7 +127,7 @@ func (fhc *fakeHealthCheck) HTMLName() template.HTML {
 	return template.HTML("fakeHealthCheck")
 }
 
-func createTestAgent(ctx context.Context, t *testing.T, preStart func(*ActionAgent)) (*ActionAgent, chan<- *binlogplayer.VtClientMock) {
+func createTestAgent(ctx context.Context, t *testing.T, preStart func(*ActionAgent)) *ActionAgent {
 	ts := memorytopo.NewServer("cell1")
 
 	if err := ts.CreateKeyspace(ctx, "test_keyspace", &topodatapb.Keyspace{}); err != nil {
@@ -157,14 +156,9 @@ func createTestAgent(ctx context.Context, t *testing.T, preStart func(*ActionAge
 	mysqlDaemon := &fakemysqldaemon.FakeMysqlDaemon{MysqlPort: 3306}
 	agent := NewTestActionAgent(ctx, ts, tabletAlias, port, 0, mysqlDaemon, preStart)
 
-	vtClientMocksChannel := make(chan *binlogplayer.VtClientMock, 1)
-	agent.BinlogPlayerMap = NewBinlogPlayerMap(ts, mysqlDaemon, func() binlogplayer.VtClient {
-		return <-vtClientMocksChannel
-	})
-
 	agent.HealthReporter = &fakeHealthCheck{}
 
-	return agent, vtClientMocksChannel
+	return agent
 }
 
 // TestHealthCheckControlsQueryService verifies that a tablet going healthy
@@ -177,7 +171,7 @@ func TestHealthCheckControlsQueryService(t *testing.T) {
 	}()
 
 	ctx := context.Background()
-	agent, _ := createTestAgent(ctx, t, nil)
+	agent := createTestAgent(ctx, t, nil)
 
 	/// Consume the first health broadcast triggered by ActionAgent.Start():
 	//  (REPLICA, NOT_SERVING) goes to (REPLICA, SERVING). And we
@@ -285,7 +279,7 @@ func TestHealthCheckControlsQueryService(t *testing.T) {
 func TestErrSlaveNotRunningIsHealthy(t *testing.T) {
 	*unhealthyThreshold = 10 * time.Minute
 	ctx := context.Background()
-	agent, _ := createTestAgent(ctx, t, nil)
+	agent := createTestAgent(ctx, t, nil)
 
 	/// Consume the first health broadcast triggered by ActionAgent.Start():
 	//  (REPLICA, NOT_SERVING) goes to (REPLICA, SERVING). And we
@@ -338,7 +332,7 @@ func TestErrSlaveNotRunningIsHealthy(t *testing.T) {
 // query service, it should not go healthy.
 func TestQueryServiceNotStarting(t *testing.T) {
 	ctx := context.Background()
-	agent, _ := createTestAgent(ctx, t, func(a *ActionAgent) {
+	agent := createTestAgent(ctx, t, func(a *ActionAgent) {
 		// The SetServingType that will fail is part of Start()
 		// so we have to do this here.
 		a.QueryServiceControl.(*tabletservermock.Controller).SetServingTypeError = fmt.Errorf("test cannot start query service")
@@ -394,7 +388,7 @@ func TestQueryServiceNotStarting(t *testing.T) {
 // service is shut down, the tablet goes unhealthy
 func TestQueryServiceStopped(t *testing.T) {
 	ctx := context.Background()
-	agent, _ := createTestAgent(ctx, t, nil)
+	agent := createTestAgent(ctx, t, nil)
 
 	/// Consume the first health broadcast triggered by ActionAgent.Start():
 	//  (REPLICA, NOT_SERVING) goes to (REPLICA, SERVING). And we
@@ -492,7 +486,7 @@ func TestQueryServiceStopped(t *testing.T) {
 // query service in a tablet.
 func TestTabletControl(t *testing.T) {
 	ctx := context.Background()
-	agent, _ := createTestAgent(ctx, t, nil)
+	agent := createTestAgent(ctx, t, nil)
 
 	/// Consume the first health broadcast triggered by ActionAgent.Start():
 	//  (REPLICA, NOT_SERVING) goes to (REPLICA, SERVING). And we
@@ -532,15 +526,25 @@ func TestTabletControl(t *testing.T) {
 	}
 
 	// now update the shard
-	_, err = agent.TopoServer.UpdateShardFields(ctx, "test_keyspace", "0", func(si *topo.ShardInfo) error {
-		si.TabletControls = []*topodatapb.Shard_TabletControl{
-			{
-				TabletType:          topodatapb.TabletType_REPLICA,
-				DisableQueryService: true,
-			},
-		}
-		return nil
-	})
+
+	si, err := agent.TopoServer.GetShard(ctx, "test_keyspace", "0")
+	if err != nil {
+		t.Fatalf("GetShard failed: %v", err)
+	}
+
+	ctx, unlock, lockErr := agent.TopoServer.LockKeyspace(ctx, "test_keyspace", "UpdateDisableQueryService")
+	if lockErr != nil {
+		t.Fatalf("Couldn't lock keyspace for test")
+	}
+	defer unlock(&err)
+
+	// Let's generate the keyspace graph we have partition information for this cell
+	err = topotools.RebuildKeyspaceLocked(ctx, logutil.NewConsoleLogger(), agent.TopoServer, "test_keyspace", []string{agent.TabletAlias.GetCell()})
+	if err != nil {
+		t.Fatalf("RebuildKeyspaceLocked failed: %v", err)
+	}
+
+	err = agent.TopoServer.UpdateDisableQueryService(ctx, "test_keyspace", []*topo.ShardInfo{si}, topodatapb.TabletType_REPLICA, nil, true)
 	if err != nil {
 		t.Fatalf("UpdateShardFields failed: %v", err)
 	}
@@ -655,12 +659,9 @@ func TestTabletControl(t *testing.T) {
 
 	// now clear TabletControl, run health check, make sure we go
 	// back healthy and serving.
-	_, err = agent.TopoServer.UpdateShardFields(ctx, "test_keyspace", "0", func(si *topo.ShardInfo) error {
-		si.TabletControls = nil
-		return nil
-	})
+	err = agent.TopoServer.UpdateDisableQueryService(ctx, "test_keyspace", []*topo.ShardInfo{si}, topodatapb.TabletType_REPLICA, nil, false)
 	if err != nil {
-		t.Fatalf("UpdateShardFields failed: %v", err)
+		t.Fatalf("UpdateDisableQueryService failed: %v", err)
 	}
 
 	// now refresh the tablet state, as the resharding process would do
@@ -687,12 +688,8 @@ func TestTabletControl(t *testing.T) {
 // of the QueryService state or the tablet type will result into a broadcast
 // of a StreamHealthResponse message.
 func TestStateChangeImmediateHealthBroadcast(t *testing.T) {
-	// BinlogPlayer will fail in the second retry because we don't fully mock
-	// it. Retry faster to make it fail faster.
-	flag.Set("binlog_player_retry_delay", "100ms")
-
 	ctx := context.Background()
-	agent, vtClientMocksChannel := createTestAgent(ctx, t, nil)
+	agent := createTestAgent(ctx, t, nil)
 
 	/// Consume the first health broadcast triggered by ActionAgent.Start():
 	//  (REPLICA, NOT_SERVING) goes to (REPLICA, SERVING). And we
@@ -722,9 +719,7 @@ func TestStateChangeImmediateHealthBroadcast(t *testing.T) {
 	if err := agent.TabletExternallyReparented(ctx, "unused_id"); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-agent.finalizeReparentCtx.Done():
-	}
+	<-agent.finalizeReparentCtx.Done()
 	ti, err := agent.TopoServer.GetTablet(ctx, tabletAlias)
 	if err != nil {
 		t.Fatalf("GetTablet failed: %v", err)
@@ -786,21 +781,6 @@ func TestStateChangeImmediateHealthBroadcast(t *testing.T) {
 		t.Fatalf("UpdateShardFields failed: %v", err)
 	}
 
-	// Mock out the BinlogPlayer client. Tell the BinlogPlayer not to start.
-	vtClientMock := binlogplayer.NewVtClientMock()
-	vtClientMock.AddResult(&sqltypes.Result{
-		Fields:       nil,
-		RowsAffected: 1,
-		InsertID:     0,
-		Rows: [][]sqltypes.Value{
-			{
-				sqltypes.NewVarBinary("MariaDB/0-1-1234"),
-				sqltypes.NewVarBinary("DontStart"),
-			},
-		},
-	})
-	vtClientMocksChannel <- vtClientMock
-
 	// Refresh the tablet state, as vtworker would do.
 	// Since we change the QueryService state, we'll also trigger a health broadcast.
 	agent.HealthReporter.(*fakeHealthCheck).reportReplicationDelay = 21 * time.Second
@@ -814,11 +794,7 @@ func TestStateChangeImmediateHealthBroadcast(t *testing.T) {
 	// (MASTER, SERVING) to (MASTER, NOT_SERVING).
 	// Since we didn't run healthcheck again yet, the broadcast data contains the
 	// cached replication lag of 20 instead of 21.
-	if bd, err := expectBroadcastData(agent.QueryServiceControl, false, "", 20); err == nil {
-		if bd.RealtimeStats.BinlogPlayersCount != 1 {
-			t.Fatalf("filtered replication must be enabled: %v", bd)
-		}
-	} else {
+	if _, err := expectBroadcastData(agent.QueryServiceControl, false, "", 20); err != nil {
 		t.Fatal(err)
 	}
 	if err := expectStateChange(agent.QueryServiceControl, false, topodatapb.TabletType_MASTER); err != nil {
@@ -841,11 +817,7 @@ func TestStateChangeImmediateHealthBroadcast(t *testing.T) {
 	if got := agent.QueryServiceControl.(*tabletservermock.Controller).CurrentTarget.TabletType; got != topodatapb.TabletType_MASTER {
 		t.Errorf("invalid tabletserver target: got = %v, want = %v", got, topodatapb.TabletType_MASTER)
 	}
-	if bd, err := expectBroadcastData(agent.QueryServiceControl, false, "", 22); err == nil {
-		if bd.RealtimeStats.BinlogPlayersCount != 1 {
-			t.Fatalf("filtered replication must be still running: %v", bd)
-		}
-	} else {
+	if _, err := expectBroadcastData(agent.QueryServiceControl, false, "", 22); err != nil {
 		t.Fatal(err)
 	}
 	// NOTE: No state change here since nothing has changed.
@@ -871,11 +843,7 @@ func TestStateChangeImmediateHealthBroadcast(t *testing.T) {
 	}
 	// Since we didn't run healthcheck again yet, the broadcast data contains the
 	// cached replication lag of 22 instead of 23.
-	if bd, err := expectBroadcastData(agent.QueryServiceControl, true, "", 22); err == nil {
-		if bd.RealtimeStats.BinlogPlayersCount != 0 {
-			t.Fatalf("filtered replication must be disabled now: %v", bd)
-		}
-	} else {
+	if _, err := expectBroadcastData(agent.QueryServiceControl, true, "", 22); err != nil {
 		t.Fatal(err)
 	}
 	if err := expectStateChange(agent.QueryServiceControl, true, topodatapb.TabletType_MASTER); err != nil {
@@ -894,7 +862,7 @@ func TestStateChangeImmediateHealthBroadcast(t *testing.T) {
 // return an error
 func TestOldHealthCheck(t *testing.T) {
 	ctx := context.Background()
-	agent, _ := createTestAgent(ctx, t, nil)
+	agent := createTestAgent(ctx, t, nil)
 	*healthCheckInterval = 20 * time.Second
 	agent._healthy = nil
 

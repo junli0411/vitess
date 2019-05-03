@@ -19,11 +19,13 @@ package tabletmanager
 import (
 	"fmt"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/tb"
-	"github.com/youtube/vitess/go/vt/callinfo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vterrors"
+
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/tb"
+	"vitess.io/vitess/go/vt/callinfo"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo/topoproto"
 )
 
 // This file contains the RPC method helpers for the tablet manager.
@@ -87,7 +89,7 @@ func (agent *ActionAgent) HandleRPCPanic(ctx context.Context, name string, args,
 	if *err != nil {
 		// error case
 		log.Warningf("TabletManager.%v(%v)(on %v from %v) error: %v", name, args, topoproto.TabletAliasString(agent.TabletAlias), from, (*err).Error())
-		*err = fmt.Errorf("TabletManager.%v on %v error: %v", name, topoproto.TabletAliasString(agent.TabletAlias), *err)
+		*err = vterrors.Wrapf(*err, "TabletManager.%v on %v error: %v", name, topoproto.TabletAliasString(agent.TabletAlias), (*err).Error())
 	} else {
 		// success case
 		log.Infof("TabletManager.%v(%v)(on %v from %v): %#v", name, args, topoproto.TabletAliasString(agent.TabletAlias), from, reply)

@@ -22,14 +22,24 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/youtube/vitess/go/sqltypes"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
 )
 
 var (
 	// ErrNotSlave means there is no slave status.
 	// Returned by ShowSlaveStatus().
 	ErrNotSlave = errors.New("no slave status")
+)
+
+const (
+	// mariaDBReplicationHackPrefix is the prefix of a version for MariaDB 10.0
+	// versions, to work around replication bugs.
+	mariaDBReplicationHackPrefix = "5.5.5-"
+	// mariaDBVersionString is present in
+	mariaDBVersionString = "MariaDB"
 )
 
 // flavor is the abstract interface for a flavor.
@@ -42,9 +52,22 @@ type flavor interface {
 	// masterGTIDSet returns the current GTIDSet of a server.
 	masterGTIDSet(c *Conn) (GTIDSet, error)
 
+	// startSlave returns the command to start the slave.
+	startSlaveCommand() string
+
+	// startSlaveUntilAfter will restart replication, but only allow it
+	// to run until `pos` is reached. After reaching pos, replication will be stopped again
+	startSlaveUntilAfter(pos Position) string
+
+	// stopSlave returns the command to stop the slave.
+	stopSlaveCommand() string
+
 	// sendBinlogDumpCommand sends the packet required to start
 	// dumping binlogs from the specified location.
 	sendBinlogDumpCommand(c *Conn, slaveID uint32, startPos Position) error
+
+	// readBinlogEvent reads the next BinlogEvent from the connection.
+	readBinlogEvent(c *Conn) (BinlogEvent, error)
 
 	// resetReplicationCommands returns the commands to completely reset
 	// replication on the host.
@@ -68,11 +91,6 @@ type flavor interface {
 	// returns NULL if GTIDs are not enabled.
 	waitUntilPositionCommand(ctx context.Context, pos Position) (string, error)
 
-	// makeBinlogEvent takes a raw packet from the MySQL binlog
-	// stream connection and returns a BinlogEvent through which
-	// the packet can be examined.
-	makeBinlogEvent(buf []byte) BinlogEvent
-
 	// enableBinlogPlaybackCommand and disableBinlogPlaybackCommand return an
 	// optional command to run to enable or disable binlog
 	// playback. This is used internally in Google, as the
@@ -80,13 +98,6 @@ type flavor interface {
 	enableBinlogPlaybackCommand() string
 	disableBinlogPlaybackCommand() string
 }
-
-// mariaDBReplicationHackPrefix is the prefix of a version for MariaDB 10.0
-// versions, to work around replication bugs.
-const mariaDBReplicationHackPrefix = "5.5.5-"
-
-// mariaDBVersionString is present in
-const mariaDBVersionString = "MariaDB"
 
 // fillFlavor fills in c.Flavor based on c.ServerVersion.
 // This is the same logic as the ConnectorJ java client. We try to recognize
@@ -105,7 +116,7 @@ func (c *Conn) fillFlavor() {
 		return
 	}
 
-	if strings.Index(c.ServerVersion, mariaDBVersionString) != -1 {
+	if strings.Contains(c.ServerVersion, mariaDBVersionString) {
 		c.flavor = mariadbFlavor{}
 		return
 	}
@@ -137,11 +148,32 @@ func (c *Conn) MasterPosition() (Position, error) {
 	}, nil
 }
 
+// StartSlaveCommand returns the command to start the slave.
+func (c *Conn) StartSlaveCommand() string {
+	return c.flavor.startSlaveCommand()
+}
+
+// StartSlaveUntilAfterCommand returns the command to start the slave.
+func (c *Conn) StartSlaveUntilAfterCommand(pos Position) string {
+	return c.flavor.startSlaveUntilAfter(pos)
+}
+
+// StopSlaveCommand returns the command to stop the slave.
+func (c *Conn) StopSlaveCommand() string {
+	return c.flavor.stopSlaveCommand()
+}
+
 // SendBinlogDumpCommand sends the flavor-specific version of
 // the COM_BINLOG_DUMP command to start dumping raw binlog
 // events over a slave connection, starting at a given GTID.
 func (c *Conn) SendBinlogDumpCommand(slaveID uint32, startPos Position) error {
 	return c.flavor.sendBinlogDumpCommand(c, slaveID, startPos)
+}
+
+// ReadBinlogEvent reads the next BinlogEvent. This must be used
+// in conjunction with SendBinlogDumpCommand.
+func (c *Conn) ReadBinlogEvent() (BinlogEvent, error) {
+	return c.flavor.readBinlogEvent(c)
 }
 
 // ResetReplicationCommands returns the commands to completely reset
@@ -195,10 +227,10 @@ func resultToMap(qr *sqltypes.Result) (map[string]string, error) {
 		return nil, nil
 	}
 	if len(qr.Rows) > 1 {
-		return nil, fmt.Errorf("query returned %d rows, expected 1", len(qr.Rows))
+		return nil, vterrors.Errorf(vtrpc.Code_INTERNAL, "query returned %d rows, expected 1", len(qr.Rows))
 	}
 	if len(qr.Fields) != len(qr.Rows[0]) {
-		return nil, fmt.Errorf("query returned %d column names, expected %d", len(qr.Fields), len(qr.Rows[0]))
+		return nil, vterrors.Errorf(vtrpc.Code_INTERNAL, "query returned %d column names, expected %d", len(qr.Fields), len(qr.Rows[0]))
 	}
 
 	result := make(map[string]string, len(qr.Fields))
@@ -236,13 +268,6 @@ func (c *Conn) ShowSlaveStatus() (SlaveStatus, error) {
 // returns NULL if GTIDs are not enabled.
 func (c *Conn) WaitUntilPositionCommand(ctx context.Context, pos Position) (string, error) {
 	return c.flavor.waitUntilPositionCommand(ctx, pos)
-}
-
-// MakeBinlogEvent takes a raw packet from the MySQL binlog
-// stream connection and returns a BinlogEvent through which
-// the packet can be examined.
-func (c *Conn) MakeBinlogEvent(buf []byte) BinlogEvent {
-	return c.flavor.makeBinlogEvent(buf)
 }
 
 // EnableBinlogPlaybackCommand returns a command to run to enable

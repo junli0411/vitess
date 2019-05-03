@@ -20,19 +20,17 @@ package gateway
 
 import (
 	"flag"
-	"fmt"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/flagutil"
+	"vitess.io/vitess/go/vt/log"
 
-	"github.com/youtube/vitess/go/vt/discovery"
-	"github.com/youtube/vitess/go/vt/srvtopo"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice"
+	"vitess.io/vitess/go/vt/discovery"
+	"vitess.io/vitess/go/vt/srvtopo"
+	"vitess.io/vitess/go/vt/vttablet/queryservice"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // This file contains the Gateway interface definition, and the
@@ -41,7 +39,16 @@ import (
 var (
 	implementation       = flag.String("gateway_implementation", "discoverygateway", "The implementation of gateway")
 	initialTabletTimeout = flag.Duration("gateway_initial_tablet_timeout", 30*time.Second, "At startup, the gateway will wait up to that duration to get one tablet per keyspace/shard/tablettype")
+
+	// KeyspacesToWatch - if provided this specifies which keyspaces should be
+	// visible to a vtgate. By default the vtgate will allow access to any
+	// keyspace.
+	KeyspacesToWatch flagutil.StringListValue
 )
+
+func init() {
+	flag.Var(&KeyspacesToWatch, "keyspaces_to_watch", "Specifies which keyspaces this vtgate should have access to while routing queries or accessing the vschema")
+}
 
 // A Gateway is the query processing module for each shard,
 // which is used by ScatterConn.
@@ -65,12 +72,15 @@ type Gateway interface {
 	// - any other error: log.Fatalf out.
 	WaitForTablets(ctx context.Context, tabletTypesToWait []topodatapb.TabletType) error
 
+	// RegisterStats registers exported stats for the gateway
+	RegisterStats()
+
 	// CacheStatus returns a list of TabletCacheStatus per shard / tablet type.
 	CacheStatus() TabletCacheStatusList
 }
 
 // Creator is the factory method which can create the actual gateway object.
-type Creator func(hc discovery.HealthCheck, topoServer *topo.Server, serv srvtopo.Server, cell string, retryCount int) Gateway
+type Creator func(ctx context.Context, hc discovery.HealthCheck, serv srvtopo.Server, cell string, retryCount int) Gateway
 
 var creators = make(map[string]Creator)
 
@@ -115,54 +125,4 @@ func WaitForTablets(gw Gateway, tabletTypesToWait []topodatapb.TabletType) error
 		// Nothing to do here, the caller will log.Fatalf.
 	}
 	return err
-}
-
-// StreamHealthFromTargetStatsListener responds to a StreamHealth
-// streaming RPC using a srvtopo.TargetStatsListener implementation.
-func StreamHealthFromTargetStatsListener(ctx context.Context, l srvtopo.TargetStatsListener, callback func(*querypb.StreamHealthResponse) error) error {
-	// Subscribe to the TargetStatsListener aggregate stats.
-	id, entries, c, err := l.Subscribe()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		// Unsubscribe so we don't receive more updates, and
-		// drain the channel.
-		l.Unsubscribe(id)
-		for range c {
-		}
-	}()
-
-	// Send all current entries.
-	for _, e := range entries {
-		shr := &querypb.StreamHealthResponse{
-			Target: e.Target,
-			TabletExternallyReparentedTimestamp: e.TabletExternallyReparentedTimestamp,
-			AggregateStats:                      e.Stats,
-		}
-		if err := callback(shr); err != nil {
-			return err
-		}
-	}
-
-	// Now listen for updates, or the end of the connection.
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case e, ok := <-c:
-			if !ok {
-				// Channel is closed, should never happen.
-				return fmt.Errorf("channel closed")
-			}
-			shr := &querypb.StreamHealthResponse{
-				Target: e.Target,
-				TabletExternallyReparentedTimestamp: e.TabletExternallyReparentedTimestamp,
-				AggregateStats:                      e.Stats,
-			}
-			if err := callback(shr); err != nil {
-				return err
-			}
-		}
-	}
 }

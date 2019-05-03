@@ -20,10 +20,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"unsafe"
 
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sqltypes"
 )
 
 func TestAppend(t *testing.T) {
@@ -32,7 +33,7 @@ func TestAppend(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	var b bytes.Buffer
+	var b strings.Builder
 	Append(&b, tree)
 	got := b.String()
 	want := query
@@ -190,6 +191,195 @@ func TestSetLimit(t *testing.T) {
 	}
 }
 
+func TestDDL(t *testing.T) {
+	testcases := []struct {
+		query    string
+		output   *DDL
+		affected []string
+	}{{
+		query: "create table a",
+		output: &DDL{
+			Action: CreateStr,
+			Table:  TableName{Name: NewTableIdent("a")},
+		},
+		affected: []string{"a"},
+	}, {
+		query: "rename table a to b",
+		output: &DDL{
+			Action: RenameStr,
+			FromTables: TableNames{
+				TableName{Name: NewTableIdent("a")},
+			},
+			ToTables: TableNames{
+				TableName{Name: NewTableIdent("b")},
+			},
+		},
+		affected: []string{"a", "b"},
+	}, {
+		query: "rename table a to b, c to d",
+		output: &DDL{
+			Action: RenameStr,
+			FromTables: TableNames{
+				TableName{Name: NewTableIdent("a")},
+				TableName{Name: NewTableIdent("c")},
+			},
+			ToTables: TableNames{
+				TableName{Name: NewTableIdent("b")},
+				TableName{Name: NewTableIdent("d")},
+			},
+		},
+		affected: []string{"a", "c", "b", "d"},
+	}, {
+		query: "drop table a",
+		output: &DDL{
+			Action: DropStr,
+			FromTables: TableNames{
+				TableName{Name: NewTableIdent("a")},
+			},
+		},
+		affected: []string{"a"},
+	}, {
+		query: "drop table a, b",
+		output: &DDL{
+			Action: DropStr,
+			FromTables: TableNames{
+				TableName{Name: NewTableIdent("a")},
+				TableName{Name: NewTableIdent("b")},
+			},
+		},
+		affected: []string{"a", "b"},
+	}}
+	for _, tcase := range testcases {
+		got, err := Parse(tcase.query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, tcase.output) {
+			t.Errorf("%s: %v, want %v", tcase.query, got, tcase.output)
+		}
+		want := make(TableNames, 0, len(tcase.affected))
+		for _, t := range tcase.affected {
+			want = append(want, TableName{Name: NewTableIdent(t)})
+		}
+		if affected := got.(*DDL).AffectedTables(); !reflect.DeepEqual(affected, want) {
+			t.Errorf("Affected(%s): %v, want %v", tcase.query, affected, want)
+		}
+	}
+}
+
+func TestSetAutocommitON(t *testing.T) {
+	stmt, err := Parse("SET autocommit=ON")
+	if err != nil {
+		t.Error(err)
+	}
+	s, ok := stmt.(*Set)
+	if !ok {
+		t.Errorf("SET statement is not Set: %T", s)
+	}
+
+	if len(s.Exprs) < 1 {
+		t.Errorf("SET statement has no expressions")
+	}
+
+	e := s.Exprs[0]
+	switch v := e.Expr.(type) {
+	case *SQLVal:
+		if v.Type != StrVal {
+			t.Errorf("SET statement value is not StrVal: %T", v)
+		}
+
+		if !bytes.Equal([]byte("on"), v.Val) {
+			t.Errorf("SET statement value want: on, got: %s", v.Val)
+		}
+	default:
+		t.Errorf("SET statement expression is not SQLVal: %T", e.Expr)
+	}
+
+	stmt, err = Parse("SET @@session.autocommit=ON")
+	if err != nil {
+		t.Error(err)
+	}
+	s, ok = stmt.(*Set)
+	if !ok {
+		t.Errorf("SET statement is not Set: %T", s)
+	}
+
+	if len(s.Exprs) < 1 {
+		t.Errorf("SET statement has no expressions")
+	}
+
+	e = s.Exprs[0]
+	switch v := e.Expr.(type) {
+	case *SQLVal:
+		if v.Type != StrVal {
+			t.Errorf("SET statement value is not StrVal: %T", v)
+		}
+
+		if !bytes.Equal([]byte("on"), v.Val) {
+			t.Errorf("SET statement value want: on, got: %s", v.Val)
+		}
+	default:
+		t.Errorf("SET statement expression is not SQLVal: %T", e.Expr)
+	}
+}
+
+func TestSetAutocommitOFF(t *testing.T) {
+	stmt, err := Parse("SET autocommit=OFF")
+	if err != nil {
+		t.Error(err)
+	}
+	s, ok := stmt.(*Set)
+	if !ok {
+		t.Errorf("SET statement is not Set: %T", s)
+	}
+
+	if len(s.Exprs) < 1 {
+		t.Errorf("SET statement has no expressions")
+	}
+
+	e := s.Exprs[0]
+	switch v := e.Expr.(type) {
+	case *SQLVal:
+		if v.Type != StrVal {
+			t.Errorf("SET statement value is not StrVal: %T", v)
+		}
+
+		if !bytes.Equal([]byte("off"), v.Val) {
+			t.Errorf("SET statement value want: on, got: %s", v.Val)
+		}
+	default:
+		t.Errorf("SET statement expression is not SQLVal: %T", e.Expr)
+	}
+
+	stmt, err = Parse("SET @@session.autocommit=OFF")
+	if err != nil {
+		t.Error(err)
+	}
+	s, ok = stmt.(*Set)
+	if !ok {
+		t.Errorf("SET statement is not Set: %T", s)
+	}
+
+	if len(s.Exprs) < 1 {
+		t.Errorf("SET statement has no expressions")
+	}
+
+	e = s.Exprs[0]
+	switch v := e.Expr.(type) {
+	case *SQLVal:
+		if v.Type != StrVal {
+			t.Errorf("SET statement value is not StrVal: %T", v)
+		}
+
+		if !bytes.Equal([]byte("off"), v.Val) {
+			t.Errorf("SET statement value want: on, got: %s", v.Val)
+		}
+	default:
+		t.Errorf("SET statement expression is not SQLVal: %T", e.Expr)
+	}
+
+}
+
 func TestWhere(t *testing.T) {
 	var w *Where
 	buf := NewTrackedBuffer(nil)
@@ -219,6 +409,182 @@ func TestIsAggregate(t *testing.T) {
 	f = FuncExpr{Name: NewColIdent("foo")}
 	if f.IsAggregate() {
 		t.Error("IsAggregate: true, want false")
+	}
+}
+
+func TestIsImpossible(t *testing.T) {
+	f := ComparisonExpr{
+		Operator: NotEqualStr,
+		Left:     newIntVal("1"),
+		Right:    newIntVal("1"),
+	}
+	if !f.IsImpossible() {
+		t.Error("IsImpossible: false, want true")
+	}
+
+	f = ComparisonExpr{
+		Operator: EqualStr,
+		Left:     newIntVal("1"),
+		Right:    newIntVal("1"),
+	}
+	if f.IsImpossible() {
+		t.Error("IsImpossible: true, want false")
+	}
+
+	f = ComparisonExpr{
+		Operator: NotEqualStr,
+		Left:     newIntVal("1"),
+		Right:    newIntVal("2"),
+	}
+	if f.IsImpossible() {
+		t.Error("IsImpossible: true, want false")
+	}
+}
+
+func TestReplaceExpr(t *testing.T) {
+	tcases := []struct {
+		in, out string
+	}{{
+		in:  "select * from t where (select a from b)",
+		out: ":a",
+	}, {
+		in:  "select * from t where (select a from b) and b",
+		out: ":a and b",
+	}, {
+		in:  "select * from t where a and (select a from b)",
+		out: "a and :a",
+	}, {
+		in:  "select * from t where (select a from b) or b",
+		out: ":a or b",
+	}, {
+		in:  "select * from t where a or (select a from b)",
+		out: "a or :a",
+	}, {
+		in:  "select * from t where not (select a from b)",
+		out: "not :a",
+	}, {
+		in:  "select * from t where ((select a from b))",
+		out: "(:a)",
+	}, {
+		in:  "select * from t where (select a from b) = 1",
+		out: ":a = 1",
+	}, {
+		in:  "select * from t where a = (select a from b)",
+		out: "a = :a",
+	}, {
+		in:  "select * from t where a like b escape (select a from b)",
+		out: "a like b escape :a",
+	}, {
+		in:  "select * from t where (select a from b) between a and b",
+		out: ":a between a and b",
+	}, {
+		in:  "select * from t where a between (select a from b) and b",
+		out: "a between :a and b",
+	}, {
+		in:  "select * from t where a between b and (select a from b)",
+		out: "a between b and :a",
+	}, {
+		in:  "select * from t where (select a from b) is null",
+		out: ":a is null",
+	}, {
+		// exists should not replace.
+		in:  "select * from t where exists (select a from b)",
+		out: "exists (select a from b)",
+	}, {
+		in:  "select * from t where a in ((select a from b), 1)",
+		out: "a in (:a, 1)",
+	}, {
+		in:  "select * from t where a in (0, (select a from b), 1)",
+		out: "a in (0, :a, 1)",
+	}, {
+		in:  "select * from t where (select a from b) + 1",
+		out: ":a + 1",
+	}, {
+		in:  "select * from t where 1+(select a from b)",
+		out: "1 + :a",
+	}, {
+		in:  "select * from t where -(select a from b)",
+		out: "-:a",
+	}, {
+		in:  "select * from t where interval (select a from b) aa",
+		out: "interval :a aa",
+	}, {
+		in:  "select * from t where (select a from b) collate utf8",
+		out: ":a collate utf8",
+	}, {
+		in:  "select * from t where func((select a from b), 1)",
+		out: "func(:a, 1)",
+	}, {
+		in:  "select * from t where func(1, (select a from b), 1)",
+		out: "func(1, :a, 1)",
+	}, {
+		in:  "select * from t where group_concat((select a from b), 1 order by a)",
+		out: "group_concat(:a, 1 order by a asc)",
+	}, {
+		in:  "select * from t where group_concat(1 order by (select a from b), a)",
+		out: "group_concat(1 order by :a asc, a asc)",
+	}, {
+		in:  "select * from t where group_concat(1 order by a, (select a from b))",
+		out: "group_concat(1 order by a asc, :a asc)",
+	}, {
+		in:  "select * from t where substr(a, (select a from b), b)",
+		out: "substr(a, :a, b)",
+	}, {
+		in:  "select * from t where substr(a, b, (select a from b))",
+		out: "substr(a, b, :a)",
+	}, {
+		in:  "select * from t where convert((select a from b), json)",
+		out: "convert(:a, json)",
+	}, {
+		in:  "select * from t where convert((select a from b) using utf8)",
+		out: "convert(:a using utf8)",
+	}, {
+		in:  "select * from t where match((select a from b), 1) against (a)",
+		out: "match(:a, 1) against (a)",
+	}, {
+		in:  "select * from t where match(1, (select a from b), 1) against (a)",
+		out: "match(1, :a, 1) against (a)",
+	}, {
+		in:  "select * from t where match(1, a, 1) against ((select a from b))",
+		out: "match(1, a, 1) against (:a)",
+	}, {
+		in:  "select * from t where case (select a from b) when a then b when b then c else d end",
+		out: "case :a when a then b when b then c else d end",
+	}, {
+		in:  "select * from t where case a when (select a from b) then b when b then c else d end",
+		out: "case a when :a then b when b then c else d end",
+	}, {
+		in:  "select * from t where case a when b then (select a from b) when b then c else d end",
+		out: "case a when b then :a when b then c else d end",
+	}, {
+		in:  "select * from t where case a when b then c when (select a from b) then c else d end",
+		out: "case a when b then c when :a then c else d end",
+	}, {
+		in:  "select * from t where case a when b then c when d then c else (select a from b) end",
+		out: "case a when b then c when d then c else :a end",
+	}}
+	to := NewValArg([]byte(":a"))
+	for _, tcase := range tcases {
+		tree, err := Parse(tcase.in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var from *Subquery
+		_ = Walk(func(node SQLNode) (kontinue bool, err error) {
+			if sq, ok := node.(*Subquery); ok {
+				from = sq
+				return false, nil
+			}
+			return true, nil
+		}, tree)
+		if from == nil {
+			t.Fatalf("from is nil for %s", tcase.in)
+		}
+		expr := ReplaceExpr(tree.(*Select).Where.Expr, from, to)
+		got := String(expr)
+		if tcase.out != got {
+			t.Errorf("ReplaceExpr(%s): %s, want %s", tcase.in, got, tcase.out)
+		}
 	}
 }
 
@@ -438,6 +804,51 @@ func TestColumns_FindColumn(t *testing.T) {
 		val := cols.FindColumn(NewColIdent(tc.in))
 		if val != tc.out {
 			t.Errorf("FindColumn(%s): %d, want %d", tc.in, val, tc.out)
+		}
+	}
+}
+
+func TestSplitStatementToPieces(t *testing.T) {
+	testcases := []struct {
+		input  string
+		output string
+	}{{
+		input: "select * from table",
+	}, {
+		input:  "select * from table1; select * from table2;",
+		output: "select * from table1; select * from table2",
+	}, {
+		input:  "select * from /* comment ; */ table;",
+		output: "select * from /* comment ; */ table",
+	}, {
+		input:  "select * from table where semi = ';';",
+		output: "select * from table where semi = ';'",
+	}, {
+		input:  "select * from table1;--comment;\nselect * from table2;",
+		output: "select * from table1;--comment;\nselect * from table2",
+	}, {
+		input: "CREATE TABLE `total_data` (`id` int(11) NOT NULL AUTO_INCREMENT COMMENT 'id', " +
+			"`region` varchar(32) NOT NULL COMMENT 'region name, like zh; th; kepler'," +
+			"`data_size` bigint NOT NULL DEFAULT '0' COMMENT 'data size;'," +
+			"`createtime` datetime NOT NULL DEFAULT NOW() COMMENT 'create time;'," +
+			"`comment` varchar(100) NOT NULL DEFAULT '' COMMENT 'comment'," +
+			"PRIMARY KEY (`id`))",
+	}}
+
+	for _, tcase := range testcases {
+		if tcase.output == "" {
+			tcase.output = tcase.input
+		}
+
+		stmtPieces, err := SplitStatementToPieces(tcase.input)
+		if err != nil {
+			t.Errorf("input: %s, err: %v", tcase.input, err)
+			continue
+		}
+
+		out := strings.Join(stmtPieces, ";")
+		if out != tcase.output {
+			t.Errorf("out: %s, want %s", out, tcase.output)
 		}
 	}
 }

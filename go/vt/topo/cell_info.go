@@ -22,8 +22,9 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // This file provides the utility methods to save / retrieve CellInfo
@@ -45,10 +46,10 @@ func pathForCellInfo(cell string) string {
 // sorted by name.
 func (ts *Server) GetCellInfoNames(ctx context.Context) ([]string, error) {
 	entries, err := ts.globalCell.ListDir(ctx, CellsPath, false /*full*/)
-	switch err {
-	case ErrNoNode:
+	switch {
+	case IsErrType(err, NoNode):
 		return nil, nil
-	case nil:
+	case err == nil:
 		return DirEntriesToStringArray(entries), nil
 	default:
 		return nil, err
@@ -102,12 +103,12 @@ func (ts *Server) UpdateCellInfoFields(ctx context.Context, cell string, update 
 
 		// Read the file, unpack the contents.
 		contents, version, err := ts.globalCell.Get(ctx, filePath)
-		switch err {
-		case nil:
+		switch {
+		case err == nil:
 			if err := proto.Unmarshal(contents, ci); err != nil {
 				return err
 			}
-		case ErrNoNode:
+		case IsErrType(err, NoNode):
 			// Nothing to do.
 		default:
 			return err
@@ -115,7 +116,7 @@ func (ts *Server) UpdateCellInfoFields(ctx context.Context, cell string, update 
 
 		// Call update method.
 		if err = update(ci); err != nil {
-			if err == ErrNoUpdateNeeded {
+			if IsErrType(err, NoUpdateNeeded) {
 				return nil
 			}
 			return err
@@ -126,7 +127,7 @@ func (ts *Server) UpdateCellInfoFields(ctx context.Context, cell string, update 
 		if err != nil {
 			return err
 		}
-		if _, err = ts.globalCell.Update(ctx, filePath, contents, version); err != ErrBadVersion {
+		if _, err = ts.globalCell.Update(ctx, filePath, contents, version); !IsErrType(err, BadVersion) {
 			// This includes the 'err=nil' case.
 			return err
 		}
@@ -136,24 +137,16 @@ func (ts *Server) UpdateCellInfoFields(ctx context.Context, cell string, update 
 // DeleteCellInfo deletes the specified CellInfo.
 // We first make sure no Shard record points to the cell.
 func (ts *Server) DeleteCellInfo(ctx context.Context, cell string) error {
-	// Get all keyspaces.
-	keyspaces, err := ts.GetKeyspaces(ctx)
-	if err != nil {
-		return fmt.Errorf("GetKeyspaces() failed: %v", err)
-	}
-
-	// For each keyspace, make sure no shard points at the cell.
-	for _, keyspace := range keyspaces {
-		shards, err := ts.FindAllShardsInKeyspace(ctx, keyspace)
-		if err != nil {
-			return fmt.Errorf("FindAllShardsInKeyspace(%v) failed: %v", keyspace, err)
+	srvKeyspaces, err := ts.GetSrvKeyspaceNames(ctx, cell)
+	switch {
+	case err == nil:
+		if len(srvKeyspaces) != 0 {
+			return vterrors.Wrap(err, fmt.Sprintf("cell %v has serving keyspaces. Before deleting, delete keyspace with: DeleteKeyspace", cell))
 		}
-
-		for shard, si := range shards {
-			if si.HasCell(cell) {
-				return fmt.Errorf("cell %v is used by shard %v/%v, cannot remove it. Use 'vtctl RemoveShardCell' to remove unused cells in a Shard", cell, keyspace, shard)
-			}
-		}
+	case IsErrType(err, NoNode):
+		// Nothing to do.
+	default:
+		return vterrors.Wrap(err, "GetSrvKeyspaceNames() failed")
 	}
 
 	filePath := pathForCellInfo(cell)

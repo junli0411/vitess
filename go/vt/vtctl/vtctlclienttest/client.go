@@ -32,17 +32,17 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vtctl/vtctlclient"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vtctl/vtctlclient"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
 
 	// import the gRPC client implementation for tablet manager
-	_ "github.com/youtube/vitess/go/vt/vttablet/grpctmclient"
+	_ "vitess.io/vitess/go/vt/vttablet/grpctmclient"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 func init() {
@@ -104,7 +104,7 @@ func TestSuite(t *testing.T, ts *topo.Server, client vtctlclient.VtctlClient) {
 		t.Fatalf("Remote error: %v", err)
 	}
 
-	got, err = stream.Recv()
+	_, err = stream.Recv()
 	expected = "node doesn't exist"
 	if err == nil || !strings.Contains(err.Error(), expected) {
 		t.Fatalf("Unexpected remote error, got: '%v' was expecting to find '%v'", err, expected)
@@ -116,7 +116,7 @@ func TestSuite(t *testing.T, ts *topo.Server, client vtctlclient.VtctlClient) {
 		t.Fatalf("Remote error: %v", err)
 	}
 
-	got, err = stream.Recv()
+	_, err = stream.Recv()
 	expected1 := "this command panics on purpose"
 	expected2 := "uncaught vtctl panic"
 	if err == nil || !strings.Contains(err.Error(), expected1) || !strings.Contains(err.Error(), expected2) {

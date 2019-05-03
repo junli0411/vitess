@@ -21,8 +21,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/key"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 func TestLookupHashNew(t *testing.T) {
@@ -36,7 +37,7 @@ func TestLookupHashNew(t *testing.T) {
 		t.Errorf("Create(lookup, false): %v, want %v", got, want)
 	}
 
-	l, err := CreateVindex("lookup_hash", "lookup_hash", map[string]string{
+	_, err := CreateVindex("lookup_hash", "lookup_hash", map[string]string{
 		"table":      "t",
 		"from":       "fromc",
 		"to":         "toc",
@@ -76,21 +77,20 @@ func TestLookupHashMap(t *testing.T) {
 	lookuphash := createLookup(t, "lookup_hash", false)
 	vc := &vcursor{numRows: 2}
 
-	got, err := lookuphash.(NonUnique).Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
+	got, err := lookuphash.Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
 	if err != nil {
 		t.Error(err)
 	}
-	want := []Ksids{{
-		IDs: [][]byte{
+	want := []key.Destination{
+		key.DestinationKeyspaceIDs([][]byte{
 			[]byte("\x16k@\xb4J\xbaK\xd6"),
 			[]byte("\x06\xe7\xea\"Βp\x8f"),
-		},
-	}, {
-		IDs: [][]byte{
+		}),
+		key.DestinationKeyspaceIDs([][]byte{
 			[]byte("\x16k@\xb4J\xbaK\xd6"),
 			[]byte("\x06\xe7\xea\"Βp\x8f"),
-		},
-	}}
+		}),
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Map(): %#v, want %+v", got, want)
 	}
@@ -100,18 +100,18 @@ func TestLookupHashMap(t *testing.T) {
 		sqltypes.MakeTestFields("a", "varbinary"),
 		"notint",
 	)
-	got, err = lookuphash.(NonUnique).Map(vc, []sqltypes.Value{sqltypes.NewInt64(1)})
+	got, err = lookuphash.Map(vc, []sqltypes.Value{sqltypes.NewInt64(1)})
 	if err != nil {
 		t.Error(err)
 	}
-	want = []Ksids{{IDs: [][]byte{}}}
+	want = []key.Destination{key.DestinationKeyspaceIDs([][]byte{})}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Map(): %#v, want %#v", got, want)
 	}
 
 	// Test query fail.
 	vc.mustFail = true
-	_, err = lookuphash.(NonUnique).Map(vc, []sqltypes.Value{sqltypes.NewInt64(1)})
+	_, err = lookuphash.Map(vc, []sqltypes.Value{sqltypes.NewInt64(1)})
 	wantErr := "lookup.Map: execute failed"
 	if err == nil || err.Error() != wantErr {
 		t.Errorf("lookuphash(query fail) err: %v, want %s", err, wantErr)
@@ -123,26 +123,65 @@ func TestLookupHashMapAbsent(t *testing.T) {
 	lookuphash := createLookup(t, "lookup_hash", false)
 	vc := &vcursor{numRows: 0}
 
-	got, err := lookuphash.(NonUnique).Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
+	got, err := lookuphash.Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
 	if err != nil {
 		t.Error(err)
 	}
-	want := []Ksids{{}, {}}
+	want := []key.Destination{
+		key.DestinationNone{},
+		key.DestinationNone{},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Map(): %#v, want %+v", got, want)
 	}
 
 	// writeOnly true should return full keyranges.
 	lookuphash = createLookup(t, "lookup_hash", true)
-	got, err = lookuphash.(NonUnique).Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
+	got, err = lookuphash.Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
 	if err != nil {
 		t.Error(err)
 	}
-	want = []Ksids{{
-		Range: &topodatapb.KeyRange{},
-	}, {
-		Range: &topodatapb.KeyRange{},
-	}}
+	want = []key.Destination{
+		key.DestinationKeyRange{
+			KeyRange: &topodatapb.KeyRange{},
+		},
+		key.DestinationKeyRange{
+			KeyRange: &topodatapb.KeyRange{},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Map(): %#v, want %+v", got, want)
+	}
+}
+
+func TestLookupHashMapNull(t *testing.T) {
+	lookuphash := createLookup(t, "lookup_hash", false)
+	vc := &vcursor{numRows: 1}
+
+	got, err := lookuphash.Map(vc, []sqltypes.Value{sqltypes.NULL})
+	if err != nil {
+		t.Error(err)
+	}
+	want := []key.Destination{
+		key.DestinationKeyspaceIDs([][]byte{
+			[]byte("\x16k@\xb4J\xbaK\xd6"),
+		}),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Map(): %#v, want %+v", got, want)
+	}
+
+	// writeOnly true should return full keyranges.
+	lookuphash = createLookup(t, "lookup_hash", true)
+	got, err = lookuphash.Map(vc, []sqltypes.Value{sqltypes.NULL})
+	if err != nil {
+		t.Error(err)
+	}
+	want = []key.Destination{
+		key.DestinationKeyRange{
+			KeyRange: &topodatapb.KeyRange{},
+		},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Map(): %#v, want %+v", got, want)
 	}
@@ -210,6 +249,15 @@ func TestLookupHashCreate(t *testing.T) {
 		t.Errorf("vc.queries length: %v, want %v", got, want)
 	}
 
+	vc.queries = nil
+	err = lookuphash.(Lookup).Create(vc, [][]sqltypes.Value{{sqltypes.NULL}}, [][]byte{[]byte("\x16k@\xb4J\xbaK\xd6")}, false /* ignoreMode */)
+	if err != nil {
+		t.Error(err)
+	}
+	if got, want := len(vc.queries), 1; got != want {
+		t.Errorf("vc.queries length: %v, want %v", got, want)
+	}
+
 	err = lookuphash.(Lookup).Create(vc, [][]sqltypes.Value{{sqltypes.NewInt64(1)}}, [][]byte{[]byte("bogus")}, false /* ignoreMode */)
 	want := "lookup.Create.vunhash: invalid keyspace id: 626f677573"
 	if err == nil || err.Error() != want {
@@ -229,6 +277,15 @@ func TestLookupHashDelete(t *testing.T) {
 		t.Errorf("vc.queries length: %v, want %v", got, want)
 	}
 
+	vc.queries = nil
+	err = lookuphash.(Lookup).Delete(vc, [][]sqltypes.Value{{sqltypes.NULL}}, []byte("\x16k@\xb4J\xbaK\xd6"))
+	if err != nil {
+		t.Error(err)
+	}
+	if got, want := len(vc.queries), 1; got != want {
+		t.Errorf("vc.queries length: %v, want %v", got, want)
+	}
+
 	err = lookuphash.(Lookup).Delete(vc, [][]sqltypes.Value{{sqltypes.NewInt64(1)}}, []byte("bogus"))
 	want := "lookup.Delete.vunhash: invalid keyspace id: 626f677573"
 	if err == nil || err.Error() != want {
@@ -241,6 +298,15 @@ func TestLookupHashUpdate(t *testing.T) {
 	vc := &vcursor{}
 
 	err := lookuphash.(Lookup).Update(vc, []sqltypes.Value{sqltypes.NewInt64(1)}, []byte("\x16k@\xb4J\xbaK\xd6"), []sqltypes.Value{sqltypes.NewInt64(2)})
+	if err != nil {
+		t.Error(err)
+	}
+	if got, want := len(vc.queries), 2; got != want {
+		t.Errorf("vc.queries length: %v, want %v", got, want)
+	}
+
+	vc.queries = nil
+	err = lookuphash.(Lookup).Update(vc, []sqltypes.Value{sqltypes.NULL}, []byte("\x16k@\xb4J\xbaK\xd6"), []sqltypes.Value{sqltypes.NewInt64(2)})
 	if err != nil {
 		t.Error(err)
 	}

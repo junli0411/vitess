@@ -22,11 +22,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vtgate/vindexes"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vtgate/vindexes"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
+
+var errNoTable = errors.New("no table info")
 
 // symtab represents the symbol table for a SELECT statement
 // or a subquery. The symtab evolves over time.
@@ -48,12 +50,8 @@ import (
 // which is later used to determine if the subquery can be
 // merged with an outer route.
 type symtab struct {
-	// if the symtab was merged with another one. The
-	// redirect is set to point to the merged symtab.
-	// Resolve is used to find the target.
-	redirect *symtab
-
-	tables map[sqlparser.TableName]*table
+	tables     map[sqlparser.TableName]*table
+	tableNames []sqlparser.TableName
 
 	// uniqueColumns has the column name as key
 	// and points at the columns that tables contains.
@@ -61,114 +59,111 @@ type symtab struct {
 
 	// singleRoute is set only if all the symbols in
 	// the symbol table are part of the same route.
-	// The route is set at creation time to be the
-	// the same as the route it was built for. As
-	// symbols are added through Merge, the route
-	// is validated against the newer symbols. If any
-	// of them have a different route, the value is
-	// set to nil.
 	singleRoute *route
 
 	ResultColumns []*resultColumn
 	Outer         *symtab
 	Externs       []*sqlparser.ColName
-	VSchema       VSchema
 }
 
 // newSymtab creates a new symtab.
-func newSymtab(vschema VSchema) *symtab {
+func newSymtab() *symtab {
 	return &symtab{
 		tables:        make(map[sqlparser.TableName]*table),
 		uniqueColumns: make(map[string]*column),
-		VSchema:       vschema,
 	}
 }
 
 // newSymtab creates a new symtab initialized
 // to contain just one route.
-func newSymtabWithRoute(vschema VSchema, rb *route) *symtab {
+func newSymtabWithRoute(rb *route) *symtab {
 	return &symtab{
 		tables:        make(map[sqlparser.TableName]*table),
 		uniqueColumns: make(map[string]*column),
-		VSchema:       vschema,
 		singleRoute:   rb,
 	}
 }
 
-func (st *symtab) Resolve() *symtab {
-	if st.redirect != nil {
-		return st.redirect.Resolve()
-	}
-	return st
-}
-
-// AddVindexTable creates a table from a vindex table
-// and adds it to symtab.
-func (st *symtab) AddVindexTable(alias sqlparser.TableName, vindexTable *vindexes.Table, rb *route) error {
+// AddVSchemaTable takes a list of vschema tables as input and
+// creates a table with multiple route options. It returns a
+// list of vindex maps, one for each input.
+func (st *symtab) AddVSchemaTable(alias sqlparser.TableName, vschemaTables []*vindexes.Table, rb *route) (vindexMaps []map[*column]vindexes.Vindex, err error) {
 	t := &table{
-		alias:       alias,
-		columns:     make(map[string]*column),
-		origin:      rb,
-		vindexTable: vindexTable,
+		alias:  alias,
+		origin: rb,
 	}
 
-	for _, col := range vindexTable.Columns {
-		t.columns[col.Name.Lowered()] = &column{
-			origin: rb,
-			name:   col.Name,
-			typ:    col.Type,
-			table:  t,
+	vindexMaps = make([]map[*column]vindexes.Vindex, len(vschemaTables))
+	for i, vst := range vschemaTables {
+		// If any input is authoritative, we make the table authoritative.
+		// TODO(sougou): vschema builder should validate that authoritative columns match.
+		if vst.ColumnListAuthoritative {
+			t.isAuthoritative = true
 		}
-	}
 
-	for _, cv := range vindexTable.ColumnVindexes {
-		for i, cvcol := range cv.Columns {
-			var vindex vindexes.Vindex
-			if i == 0 {
-				// For now, only the first column is used for vindex Map functions.
-				vindex = cv.Vindex
-			}
-			lowered := cvcol.Lowered()
-			if col, ok := t.columns[lowered]; ok {
-				col.Vindex = vindex
-				continue
-			}
-			t.columns[lowered] = &column{
+		for _, col := range vst.Columns {
+			t.addColumn(col.Name, &column{
 				origin: rb,
-				Vindex: vindex,
-				name:   cvcol,
-				table:  t,
-			}
+				st:     st,
+				typ:    col.Type,
+			})
 		}
-	}
 
-	if ai := vindexTable.AutoIncrement; ai != nil {
-		lowered := ai.Column.Lowered()
-		if _, ok := t.columns[lowered]; !ok {
-			t.columns[lowered] = &column{
-				origin: rb,
-				name:   ai.Column,
-				table:  t,
+		var vindexMap map[*column]vindexes.Vindex
+		for _, cv := range vst.ColumnVindexes {
+			for i, cvcol := range cv.Columns {
+				col, ok := t.columns[cvcol.Lowered()]
+				if !ok {
+					col = &column{
+						origin: rb,
+						st:     st,
+					}
+					t.addColumn(cvcol, col)
+				}
+				if i == 0 {
+					// For now, only the first column is used for vindex Map functions.
+					if vindexMap == nil {
+						vindexMap = make(map[*column]vindexes.Vindex)
+					}
+					vindexMap[col] = cv.Vindex
+				}
 			}
 		}
+		vindexMaps[i] = vindexMap
+
+		if ai := vst.AutoIncrement; ai != nil {
+			if _, ok := t.columns[ai.Column.Lowered()]; !ok {
+				t.addColumn(ai.Column, &column{
+					origin: rb,
+					st:     st,
+				})
+			}
+		}
+
 	}
-	return st.AddTable(t)
+	if err := st.AddTable(t); err != nil {
+		return nil, err
+	}
+	return vindexMaps, nil
 }
 
 // Merge merges the new symtab into the current one.
 // Duplicate table aliases return an error.
 // uniqueColumns is updated, but duplicates are removed.
-// The function panics if ResultColumns or Externs contain values.
-// This is because symbol tables are allowed to merge only during
-// analysis for the FROM clause. At that time, there should be
-// no ResultColumns or Externs.
+// Merges are only performed during the FROM clause analysis.
+// At this point, only tables and uniqueColumns are set.
+// All other fields are ignored.
 func (st *symtab) Merge(newsyms *symtab) error {
+	if st.tableNames == nil || newsyms.tableNames == nil {
+		// If any side of symtab has anonymous tables,
+		// we treat the merged symtab as having anonymous tables.
+		return nil
+	}
 	for _, t := range newsyms.tables {
 		if err := st.AddTable(t); err != nil {
 			return err
 		}
 	}
-	newsyms.redirect = st
 	return nil
 }
 
@@ -181,10 +176,12 @@ func (st *symtab) AddTable(t *table) error {
 		return fmt.Errorf("duplicate symbol: %s", sqlparser.String(t.alias))
 	}
 	st.tables[t.alias] = t
+	st.tableNames = append(st.tableNames, t.alias)
 
 	// update the uniqueColumns list, and eliminate
 	// duplicate symbols if found.
 	for colname, c := range t.columns {
+		c.st = st
 		if _, ok := st.uniqueColumns[colname]; ok {
 			// Keep the entry, but make it nil. This will
 			// ensure that yet another column of the same name
@@ -197,18 +194,46 @@ func (st *symtab) AddTable(t *table) error {
 	return nil
 }
 
-// ClearVindexes removes the Column Vindexes from the aliases signifying
-// that they cannot be used to make routing improvements. This is
-// called if a primitive is in the RHS of a LEFT JOIN.
-func (st *symtab) ClearVindexes() {
-	for _, t := range st.tables {
-		for _, c := range t.columns {
-			c.Vindex = nil
-		}
+// AllTables returns an ordered list of all current tables.
+func (st *symtab) AllTables() []*table {
+	if len(st.tableNames) == 0 {
+		return nil
 	}
+	tables := make([]*table, 0, len(st.tableNames))
+	for _, tname := range st.tableNames {
+		tables = append(tables, st.tables[tname])
+	}
+	return tables
 }
 
-// Find returns the columnOriginator for the symbol referenced by col.
+// FindTable finds a table in symtab. This function is specifically used
+// for expanding 'select a.*' constructs. If you're in a subquery,
+// you're most likely referring to a table in the local 'from' clause.
+// For this reason, the search is only performed in the current scope.
+// This may be a deviation from the formal definition of SQL, but there
+// are currently no use cases that require the full support.
+func (st *symtab) FindTable(tname sqlparser.TableName) (*table, error) {
+	if st.tableNames == nil {
+		// Unreachable because current code path checks for this condition
+		// before invoking this function.
+		return nil, errNoTable
+	}
+	t, ok := st.tables[tname]
+	if !ok {
+		return nil, fmt.Errorf("table %v not found", sqlparser.String(tname))
+	}
+	return t, nil
+}
+
+// SetResultColumns sets the result columns.
+func (st *symtab) SetResultColumns(rcs []*resultColumn) {
+	for _, rc := range rcs {
+		rc.column.st = st
+	}
+	st.ResultColumns = rcs
+}
+
+// Find returns the builder for the symbol referenced by col.
 // If a reference is found, col.Metadata is set to point
 // to it. Subsequent searches will reuse this metadata.
 //
@@ -236,10 +261,10 @@ func (st *symtab) ClearVindexes() {
 // as true. Otherwise, it's returned as false and the symbol
 // gets added to the Externs list, which can later be used
 // to decide where to push-down the subquery.
-func (st *symtab) Find(col *sqlparser.ColName) (origin columnOriginator, isLocal bool, err error) {
+func (st *symtab) Find(col *sqlparser.ColName) (origin builder, isLocal bool, err error) {
 	// Return previously cached info if present.
 	if column, ok := col.Metadata.(*column); ok {
-		return column.Origin(), column.Origin().Symtab() == st, nil
+		return column.Origin(), column.st == st, nil
 	}
 
 	// Unqualified column case.
@@ -324,7 +349,7 @@ func (st *symtab) searchTables(col *sqlparser.ColName) (*column, error) {
 			// No return: break out.
 		case st.singleRoute != nil:
 			// If there's only one route, create an anonymous symbol.
-			return &column{origin: st.singleRoute}, nil
+			return &column{origin: st.singleRoute, st: st}, nil
 		default:
 			// If none of the above, the symbol is unresolvable.
 			return nil, fmt.Errorf("symbol %s not found", sqlparser.String(col))
@@ -341,47 +366,21 @@ func (st *symtab) searchTables(col *sqlparser.ColName) (*column, error) {
 	c, ok := t.columns[col.Name.Lowered()]
 	if !ok {
 		// We know all the column names of a subquery. Might as well return an error if it's not found.
-		if _, ok := t.origin.(*subquery); ok {
-			return nil, fmt.Errorf("symbol %s is referencing a non-existent column of the subquery", sqlparser.String(col))
+		if t.isAuthoritative {
+			return nil, fmt.Errorf("symbol %s not found in table or subquery", sqlparser.String(col))
 		}
 		c = &column{
-			origin: t.origin,
-			name:   col.Name,
-			table:  t,
+			origin: t.Origin(),
+			st:     st,
 		}
-		t.columns[col.Name.Lowered()] = c
+		t.addColumn(col.Name, c)
 	}
 	return c, nil
 }
 
-// NewResultColumn creates a new resultColumn based on the supplied expression.
-// The created symbol is not remembered until it is later set as ResultColumns
-// after all select expressions are analyzed.
-func (st *symtab) NewResultColumn(expr *sqlparser.AliasedExpr, origin columnOriginator) *resultColumn {
-	rc := &resultColumn{
-		alias: expr.As,
-	}
-	if col, ok := expr.Expr.(*sqlparser.ColName); ok {
-		// If no alias was specified, then the base name
-		// of the column becomes the alias.
-		if rc.alias.IsEmpty() {
-			rc.alias = col.Name
-		}
-		// If it's a col it should already have metadata.
-		rc.column = col.Metadata.(*column)
-	} else {
-		// We don't generate an alias if the expression is non-trivial.
-		// Just to be safe, generate an anonymous column for the expression.
-		rc.column = &column{
-			origin: origin,
-		}
-	}
-	return rc
-}
-
 // ResultFromNumber returns the result column index based on the column
 // order expression.
-func ResultFromNumber(resultColumns []*resultColumn, val *sqlparser.SQLVal) (int, error) {
+func ResultFromNumber(rcs []*resultColumn, val *sqlparser.SQLVal) (int, error) {
 	if val.Type != sqlparser.IntVal {
 		return 0, errors.New("column number is not an int")
 	}
@@ -389,30 +388,10 @@ func ResultFromNumber(resultColumns []*resultColumn, val *sqlparser.SQLVal) (int
 	if err != nil {
 		return 0, fmt.Errorf("error parsing column number: %s", sqlparser.String(val))
 	}
-	if num < 1 || num > int64(len(resultColumns)) {
+	if num < 1 || num > int64(len(rcs)) {
 		return 0, fmt.Errorf("column number out of range: %d", num)
 	}
 	return int(num - 1), nil
-}
-
-// Vindex returns the vindex if the expression is a plain column reference
-// that is part of the specified route, and has an associated vindex.
-func (st *symtab) Vindex(expr sqlparser.Expr, scope *route) vindexes.Vindex {
-	col, ok := expr.(*sqlparser.ColName)
-	if !ok {
-		return nil
-	}
-	if col.Metadata == nil {
-		// Find will set the Metadata.
-		if _, _, err := st.Find(col); err != nil {
-			return nil
-		}
-	}
-	c := col.Metadata.(*column)
-	if c.Origin() != scope {
-		return nil
-	}
-	return c.Vindex
 }
 
 // ResolveSymbols resolves all column references against symtab.
@@ -435,54 +414,54 @@ func (st *symtab) ResolveSymbols(node sqlparser.SQLNode) error {
 
 // table is part of symtab.
 // It represents a table alias in a FROM clause. It points
-// to the columnOriginator that represents it.
+// to the builder that represents it.
 type table struct {
-	alias       sqlparser.TableName
-	columns     map[string]*column
-	origin      columnOriginator
-	vindexTable *vindexes.Table
+	alias           sqlparser.TableName
+	columns         map[string]*column
+	columnNames     []sqlparser.ColIdent
+	isAuthoritative bool
+	origin          builder
+}
+
+func (t *table) addColumn(alias sqlparser.ColIdent, c *column) {
+	if t.columns == nil {
+		t.columns = make(map[string]*column)
+	}
+	lowered := alias.Lowered()
+	// Dups are allowed, but first one wins if referenced.
+	if _, ok := t.columns[lowered]; !ok {
+		c.colnum = len(t.columnNames)
+		t.columns[lowered] = c
+	}
+	t.columnNames = append(t.columnNames, alias)
+}
+
+// Origin returns the route that originates the table.
+func (t *table) Origin() builder {
+	// If it's a route, we have to resolve it.
+	if rb, ok := t.origin.(*route); ok {
+		return rb.Resolve()
+	}
+	return t.origin
 }
 
 // column represents a unique symbol in the query that other
-// parts can refer to. A column can be a table column or
-// a result column (select expression). Every column
-// contains the columnOriginator it originates from.
-// Columns for table columns are created or reused by
-// symtab through the Find function.
+// parts can refer to.
+// Every column contains the builder it originates from.
 //
-// Columns are created by columnOriginator objects.
+// Two columns are equal if their pointer values match.
 //
-// Anonymous columns can be created by symtab to represent
-// ambiguous column references, but whose route can still be
-// identified. For example, in the case of 'select a from t1, t2',
-// if t1 and t2 are from the same unsharded keyspace, 'a' will
-// be created as an anonymous column because we don't know
-// which table it's coming from. Consequently, anonymous columns
-// can only be created for single-route plans, and they're
-// used only for push-down decisions.
-//
-// For a column whose table is known, the column name and
-// pointer to the table are stored. This information is
-// used to construct a select expression if the column is
-// requested during the wire-up phase.
-// If the table column has a vindex, then that information
-// is also stored and used to make routing decisions.
-// Two columns are equal only if their pointer values match,
-// and not their content.
+// For subquery and vindexFunc, the colnum is also set because
+// the column order is known and unchangeable.
 type column struct {
-	origin columnOriginator
-	Vindex vindexes.Vindex
-	name   sqlparser.ColIdent
+	origin builder
+	st     *symtab
 	typ    querypb.Type
-	table  *table
-
-	// colnum is set only for primitives that can return a
-	// subset of their internal result like subquery or vindexFunc.
 	colnum int
 }
 
 // Origin returns the route that originates the column.
-func (c *column) Origin() columnOriginator {
+func (c *column) Origin() builder {
 	// If it's a route, we have to resolve it.
 	if rb, ok := c.origin.(*route); ok {
 		return rb.Resolve()
@@ -502,4 +481,29 @@ type resultColumn struct {
 	// the query.
 	alias  sqlparser.ColIdent
 	column *column
+}
+
+// NewResultColumn creates a new resultColumn based on the supplied expression.
+// The created symbol is not remembered until it is later set as ResultColumns
+// after all select expressions are analyzed.
+func newResultColumn(expr *sqlparser.AliasedExpr, origin builder) *resultColumn {
+	rc := &resultColumn{
+		alias: expr.As,
+	}
+	if col, ok := expr.Expr.(*sqlparser.ColName); ok {
+		// If no alias was specified, then the base name
+		// of the column becomes the alias.
+		if rc.alias.IsEmpty() {
+			rc.alias = col.Name
+		}
+		// If it's a col it should already have metadata.
+		rc.column = col.Metadata.(*column)
+	} else {
+		// We don't generate an alias if the expression is non-trivial.
+		// Just to be safe, generate an anonymous column for the expression.
+		rc.column = &column{
+			origin: origin,
+		}
+	}
+	return rc
 }

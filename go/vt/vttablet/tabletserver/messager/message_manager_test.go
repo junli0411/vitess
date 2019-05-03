@@ -26,15 +26,15 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/sync2"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/connpool"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sync2"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/connpool"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 var (
@@ -614,7 +614,7 @@ func TestMessagesPending1(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		<-r1.ch
 	}
-	if d := time.Now().Sub(start); d > 15*time.Second {
+	if d := time.Since(start); d > 15*time.Second {
 		t.Errorf("pending work trigger did not happen. Duration: %v", d)
 	}
 }
@@ -663,7 +663,7 @@ func TestMessagesPending2(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		<-r1.ch
 	}
-	if d := time.Now().Sub(start); d > 15*time.Second {
+	if d := time.Since(start); d > 15*time.Second {
 		t.Errorf("pending work trigger did not happen. Duration: %v", d)
 	}
 }
@@ -785,10 +785,7 @@ func (fts *fakeTabletServer) PurgeMessages(ctx context.Context, target *querypb.
 
 func newMMConnPool(db *fakesqldb.DB) *connpool.Pool {
 	pool := connpool.New("", 20, time.Duration(10*time.Minute), newFakeTabletServer())
-	dbconfigs := dbconfigs.DBConfigs{
-		App:           *db.ConnParams(),
-		SidecarDBName: "_vt",
-	}
-	pool.Open(&dbconfigs.App, &dbconfigs.Dba, &dbconfigs.AppDebug)
+	dbconfigs := dbconfigs.NewTestDBConfigs(*db.ConnParams(), *db.ConnParams(), "")
+	pool.Open(dbconfigs.AppWithDB(), dbconfigs.DbaWithDB(), dbconfigs.AppDebugWithDB())
 	return pool
 }

@@ -22,17 +22,17 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vttablet/grpcqueryservice"
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice/fakes"
-	"github.com/youtube/vitess/go/vt/wrangler/testlib"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/vt/mysqlctl/tmutils"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vttablet/grpcqueryservice"
+	"vitess.io/vitess/go/vt/vttablet/queryservice/fakes"
+	"vitess.io/vitess/go/vt/wrangler/testlib"
 
-	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	tabletmanagerdatapb "vitess.io/vitess/go/vt/proto/tabletmanagerdata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 const (
@@ -51,8 +51,6 @@ func createVerticalSplitCloneDestinationFakeDb(t *testing.T, name string, insert
 	for i := 1; i <= insertCount; i++ {
 		f.AddExpectedQuery("INSERT INTO `vt_destination_ks`.`moving1` (`id`, `msg`) VALUES (*", nil)
 	}
-
-	expectBlpCheckpointCreationQueries(f)
 
 	return f
 }
@@ -134,7 +132,7 @@ func TestVerticalSplitClone(t *testing.T) {
 		},
 	}
 	sourceRdonly.FakeMysqlDaemon.CurrentMasterPosition = mysql.Position{
-		GTIDSet: mysql.MariadbGTID{Domain: 12, Server: 34, Sequence: 5678},
+		GTIDSet: mysql.MariadbGTIDSet{mysql.MariadbGTID{Domain: 12, Server: 34, Sequence: 5678}},
 	}
 	sourceRdonly.FakeMysqlDaemon.ExpectedExecuteSuperQueryList = []string{
 		"STOP SLAVE",
@@ -146,24 +144,20 @@ func TestVerticalSplitClone(t *testing.T) {
 	sourceRdonlyQs.addGeneratedRows(verticalSplitCloneTestMin, verticalSplitCloneTestMax)
 	grpcqueryservice.Register(sourceRdonly.RPCServer, sourceRdonlyQs)
 
-	// Set up destination rdonly which will be used as input for the diff during the clone.
-	destRdonlyShqs := fakes.NewStreamHealthQueryService(destRdonly.Target())
-	destRdonlyShqs.AddDefaultHealthResponse()
-	destRdonlyQs := newTestQueryService(t, destRdonly.Target(), destRdonlyShqs, 0, 1, topoproto.TabletAliasString(destRdonly.Tablet.Alias), true /* omitKeyspaceID */)
+	// Set up destination master which will be used as input for the diff during the clone.
+	destMasterShqs := fakes.NewStreamHealthQueryService(destMaster.Target())
+	destMasterShqs.AddDefaultHealthResponse()
+	destMasterQs := newTestQueryService(t, destMaster.Target(), destMasterShqs, 0, 1, topoproto.TabletAliasString(destMaster.Tablet.Alias), true /* omitKeyspaceID */)
 	// This tablet is empty and does not return any rows.
-	grpcqueryservice.Register(destRdonly.RPCServer, destRdonlyQs)
+	grpcqueryservice.Register(destMaster.RPCServer, destMasterQs)
 
-	// Fake stream health reponses because vtworker needs them to find the master.
-	qs := fakes.NewStreamHealthQueryService(destMaster.Target())
-	qs.AddDefaultHealthResponse()
-	grpcqueryservice.Register(destMaster.RPCServer, qs)
 	// Only wait 1 ms between retries, so that the test passes faster
 	*executeFetchRetryTime = (1 * time.Millisecond)
 
 	// When the online clone inserted the last rows, modify the destination test
 	// query service such that it will return them as well.
 	destMasterFakeDb.GetEntry(29).AfterFunc = func() {
-		destRdonlyQs.addGeneratedRows(verticalSplitCloneTestMin, verticalSplitCloneTestMax)
+		destMasterQs.addGeneratedRows(verticalSplitCloneTestMin, verticalSplitCloneTestMax)
 	}
 
 	// Start action loop after having registered all RPC services.
@@ -187,7 +181,7 @@ func TestVerticalSplitClone(t *testing.T) {
 		"-min_rows_per_chunk", "10",
 		"-destination_writer_count", "10",
 		// This test uses only one healthy RDONLY tablet.
-		"-min_healthy_rdonly_tablets", "1",
+		"-min_healthy_tablets", "1",
 		"destination_ks/0",
 	}
 	if err := runCommand(t, wi, wi.wr, args); err != nil {

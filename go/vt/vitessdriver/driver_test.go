@@ -30,9 +30,9 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	"github.com/youtube/vitess/go/vt/vtgate/grpcvtgateservice"
+	"vitess.io/vitess/go/sqltypes"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	"vitess.io/vitess/go/vt/vtgate/grpcvtgateservice"
 )
 
 var (
@@ -574,9 +574,8 @@ func TestTx(t *testing.T) {
 	// Commit on committed transaction is caught by Golang sql package.
 	// We actually don't have to cover this in our code.
 	err = tx.Commit()
-	want := "sql: Transaction has already been committed or rolled back"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("err: %v, does not contain %s", err, want)
+	if err != sql.ErrTxDone {
+		t.Errorf("err: %v, not ErrTxDone", err)
 	}
 
 	// Test rollback now.
@@ -599,9 +598,8 @@ func TestTx(t *testing.T) {
 	// Rollback on rolled back transaction is caught by Golang sql package.
 	// We actually don't have to cover this in our code.
 	err = tx.Rollback()
-	want = "sql: Transaction has already been committed or rolled back"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("err: %v, does not contain %s", err, want)
+	if err != sql.ErrTxDone {
+		t.Errorf("err: %v, not ErrTxDone", err)
 	}
 }
 

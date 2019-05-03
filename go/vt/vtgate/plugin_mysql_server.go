@@ -25,32 +25,41 @@ import (
 	"syscall"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/trace"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/callerid"
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/vttls"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/callerid"
+	"vitess.io/vitess/go/vt/callinfo"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/vttls"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	vtgatepb "github.com/youtube/vitess/go/vt/proto/vtgate"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	vtgatepb "vitess.io/vitess/go/vt/proto/vtgate"
 )
 
 var (
 	mysqlServerPort               = flag.Int("mysql_server_port", -1, "If set, also listen for MySQL binary protocol connections on this port.")
 	mysqlServerBindAddress        = flag.String("mysql_server_bind_address", "", "Binds on this address when listening to MySQL binary protocol. Useful to restrict listening to 'localhost' only for instance.")
 	mysqlServerSocketPath         = flag.String("mysql_server_socket_path", "", "This option specifies the Unix socket file to use when listening for local connections. By default it will be empty and it won't listen to a unix socket")
+	mysqlTCPVersion               = flag.String("mysql_tcp_version", "tcp", "Select tcp, tcp4, or tcp6 to control the socket type.")
 	mysqlAuthServerImpl           = flag.String("mysql_auth_server_impl", "static", "Which auth server implementation to use.")
 	mysqlAllowClearTextWithoutTLS = flag.Bool("mysql_allow_clear_text_without_tls", false, "If set, the server will allow the use of a clear text password over non-SSL connections.")
 	mysqlServerVersion            = flag.String("mysql_server_version", mysql.DefaultServerVersion, "MySQL server version to advertise.")
+
+	mysqlServerRequireSecureTransport = flag.Bool("mysql_server_require_secure_transport", false, "Reject insecure connections but only if mysql_server_ssl_cert and mysql_server_ssl_key are provided")
 
 	mysqlSslCert = flag.String("mysql_server_ssl_cert", "", "Path to the ssl cert for mysql server plugin SSL")
 	mysqlSslKey  = flag.String("mysql_server_ssl_key", "", "Path to ssl key for mysql server plugin SSL")
 	mysqlSslCa   = flag.String("mysql_server_ssl_ca", "", "Path to ssl CA for mysql server plugin SSL. If specified, server will require and validate client certs.")
 
 	mysqlSlowConnectWarnThreshold = flag.Duration("mysql_slow_connect_warn_threshold", 0, "Warn if it takes more than the given threshold for a mysql connection to establish")
+
+	mysqlConnReadTimeout  = flag.Duration("mysql_server_read_timeout", 0, "connection read timeout")
+	mysqlConnWriteTimeout = flag.Duration("mysql_server_write_timeout", 0, "connection write timeout")
+	mysqlQueryTimeout     = flag.Duration("mysql_server_query_timeout", 0, "mysql query timeout")
 
 	busyConnections int32
 )
@@ -73,7 +82,14 @@ func (vh *vtgateHandler) NewConnection(c *mysql.Conn) {
 
 func (vh *vtgateHandler) ConnectionClosed(c *mysql.Conn) {
 	// Rollback if there is an ongoing transaction. Ignore error.
-	ctx := context.Background()
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if *mysqlQueryTimeout != 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), *mysqlQueryTimeout)
+		defer cancel()
+	} else {
+		ctx = context.Background()
+	}
 	session, _ := c.ClientData.(*vtgatepb.Session)
 	if session != nil {
 		if session.InTransaction {
@@ -84,8 +100,17 @@ func (vh *vtgateHandler) ConnectionClosed(c *mysql.Conn) {
 }
 
 func (vh *vtgateHandler) ComQuery(c *mysql.Conn, query string, callback func(*sqltypes.Result) error) error {
-	// FIXME(alainjobart): Add some kind of timeout to the context.
 	ctx := context.Background()
+	var cancel context.CancelFunc
+	if *mysqlQueryTimeout != 0 {
+		ctx, cancel = context.WithTimeout(ctx, *mysqlQueryTimeout)
+		defer cancel()
+	}
+	span, ctx := trace.NewSpan(ctx, "vtgateHandler.ComQuery")
+	trace.AnnotateSQL(span, query)
+	defer span.Finish()
+
+	ctx = callinfo.MysqlCallInfo(ctx, c)
 
 	// Fill in the ImmediateCallerID with the UserData returned by
 	// the AuthServer plugin for that user. If nothing was
@@ -137,6 +162,14 @@ func (vh *vtgateHandler) ComQuery(c *mysql.Conn, query string, callback func(*sq
 	return callback(result)
 }
 
+func (vh *vtgateHandler) WarningCount(c *mysql.Conn) uint16 {
+	session, _ := c.ClientData.(*vtgatepb.Session)
+	if session != nil {
+		return uint16(len(session.GetWarnings()))
+	}
+	return 0
+}
+
 var mysqlListener *mysql.Listener
 var mysqlUnixListener *mysql.Listener
 
@@ -159,11 +192,18 @@ func initMySQLProtocol() {
 	}
 	authServer := mysql.GetAuthServer(*mysqlAuthServerImpl)
 
+	switch *mysqlTCPVersion {
+	case "tcp", "tcp4", "tcp6":
+		// Valid flag value.
+	default:
+		log.Exitf("-mysql_tcp_version must be one of [tcp, tcp4, tcp6]")
+	}
+
 	// Create a Listener.
 	var err error
 	vh := newVtgateHandler(rpcVTGate)
 	if *mysqlServerPort >= 0 {
-		mysqlListener, err = mysql.NewListener("tcp", net.JoinHostPort(*mysqlServerBindAddress, fmt.Sprintf("%v", *mysqlServerPort)), authServer, vh)
+		mysqlListener, err = mysql.NewListener(*mysqlTCPVersion, net.JoinHostPort(*mysqlServerBindAddress, fmt.Sprintf("%v", *mysqlServerPort)), authServer, vh, *mysqlConnReadTimeout, *mysqlConnWriteTimeout)
 		if err != nil {
 			log.Exitf("mysql.NewListener failed: %v", err)
 		}
@@ -176,9 +216,9 @@ func initMySQLProtocol() {
 				log.Exitf("grpcutils.TLSServerConfig failed: %v", err)
 				return
 			}
+			mysqlListener.RequireSecureTransport = *mysqlServerRequireSecureTransport
 		}
 		mysqlListener.AllowClearTextWithoutTLS = *mysqlAllowClearTextWithoutTLS
-
 		// Check for the connection threshold
 		if *mysqlSlowConnectWarnThreshold != 0 {
 			log.Infof("setting mysql slow connection threshold to %v", mysqlSlowConnectWarnThreshold)
@@ -206,7 +246,7 @@ func initMySQLProtocol() {
 // newMysqlUnixSocket creates a new unix socket mysql listener. If a socket file already exists, attempts
 // to clean it up.
 func newMysqlUnixSocket(address string, authServer mysql.AuthServer, handler mysql.Handler) (*mysql.Listener, error) {
-	listener, err := mysql.NewListener("unix", address, authServer, handler)
+	listener, err := mysql.NewListener("unix", address, authServer, handler, *mysqlConnReadTimeout, *mysqlConnWriteTimeout)
 	switch err := err.(type) {
 	case nil:
 		return listener, nil
@@ -227,7 +267,7 @@ func newMysqlUnixSocket(address string, authServer mysql.AuthServer, handler mys
 			log.Errorf("Couldn't remove existent socket file: %s", address)
 			return nil, err
 		}
-		listener, listenerErr := mysql.NewListener("unix", address, authServer, handler)
+		listener, listenerErr := mysql.NewListener("unix", address, authServer, handler, *mysqlConnReadTimeout, *mysqlConnWriteTimeout)
 		return listener, listenerErr
 	default:
 		return nil, err

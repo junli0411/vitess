@@ -6,8 +6,7 @@ If you run into issues or have questions, please post on our
 
 ## Docker Build
 
-To run Vitess in Docker, you can either use our pre-built images on [Docker Hub]
-(https://hub.docker.com/u/vitess/), or build them yourself.
+To run Vitess in Docker, you can either use our pre-built images on [Docker Hub](https://hub.docker.com/u/vitess/), or build them yourself.
 
 ### Docker Hub Images
 
@@ -24,7 +23,7 @@ image for you:
 
 ``` sh
 $ sudo docker run -ti vitess/base bash
-vitess@32f187ef9351:/vt/src/github.com/youtube/vitess$ make build
+vitess@32f187ef9351:/vt/src/vitess.io/vitess$ make build
 ```
 
 Now you can proceed to [start a Vitess cluster](#start-a-vitess-cluster) inside
@@ -45,9 +44,9 @@ $ docker inspect 32f187ef9351 | grep IPAddress
 
 You can also build Vitess Docker images yourself to include your
 own patches or configuration data. The
-[Dockerfile](https://github.com/youtube/vitess/blob/master/Dockerfile)
+[Dockerfile](https://github.com/vitessio/vitess/blob/master/Dockerfile)
 in the root of the Vitess tree builds the `vitess/base` image.
-The [docker](https://github.com/youtube/vitess/tree/master/docker)
+The [docker](https://github.com/vitessio/vitess/tree/master/docker)
 subdirectory contains scripts for building other images, such as `vitess/lite`.
 
 Our `Makefile` also contains rules to build the images. For example:
@@ -73,13 +72,13 @@ OS X 10.11 (El Capitan) should work as well, the installation instructions are b
 
 In addition, Vitess requires the software and libraries listed below.
 
-1.  [Install Go 1.9+](http://golang.org/doc/install).
+1.  [Install Go 1.11+](https://golang.org/doc/install).
 
 2.  Install [MariaDB 10.0](https://downloads.mariadb.org/) or
-    [MySQL 5.6](http://dev.mysql.com/downloads/mysql). You can use any
+    [MySQL 5.6](https://dev.mysql.com/downloads/mysql). You can use any
     installation method (src/bin/rpm/deb), but be sure to include the client
     development headers (`libmariadbclient-dev` or `libmysqlclient-dev`).
- 
+
     The Vitess development team currently tests against MariaDB 10.0.21
     and MySQL 5.6.27.
 
@@ -117,7 +116,7 @@ In addition, Vitess requires the software and libraries listed below.
 4.  Select a lock service from the options listed below. It is technically
     possible to use another lock server, but plugins currently exist only
     for ZooKeeper, etcd and consul.
-    - ZooKeeper 3.4.10 is included by default. 
+    - ZooKeeper 3.4.14 is included by default.
     - [Install etcd v3.0+](https://github.com/coreos/etcd/releases).
       If you use etcd, remember to include the `etcd` command
       on your path.
@@ -152,78 +151,57 @@ In addition, Vitess requires the software and libraries listed below.
     ``` sh
     $ sudo apt-get install openjdk-7-jre
     ```
-    
+
 #### OS X
 
-1.  [Install Homebrew](http://brew.sh/). If your /usr/local directory is not empty and you never used Homebrew before,
-    it will be 
-    [mandatory](https://github.com/Homebrew/homebrew/blob/master/share/doc/homebrew/El_Capitan_and_Homebrew.md) 
+1.  [Install Homebrew](https://brew.sh/). If your /usr/local directory is not empty and you never used Homebrew before,
+    it will be
+    [mandatory](https://github.com/Homebrew/homebrew/blob/master/share/doc/homebrew/El_Capitan_and_Homebrew.md)
     to run the following command:
-    
+
     ``` sh
     sudo chown -R $(whoami):admin /usr/local
     ```
 
 2.  On OS X, MySQL 5.6 has to be used, MariaDB doesn't work for some reason yet. It should be installed from Homebrew
-    (install steps are below).
-    
-3.  If Xcode is installed (with Console tools, which should be bundled automatically since the 7.1 version), all 
-    the dev dependencies should be satisfied in this step. If no Xcode is present, it is necessery to install pkg-config.
-     
+    (`install steps are below`).
+
+3.  If Xcode is installed (with Console tools, which should be bundled automatically since the 7.1 version), all
+    the dev dependencies should be satisfied in this step. If no Xcode is present, it is necessary to install pkg-config.
+
     ``` sh
     brew install pkg-config
     ```
-   
+
 4.  ZooKeeper is used as lock service.
 
 5.  Run the following commands:
 
     ``` sh
-    brew install go automake libtool python git bison curl wget homebrew/versions/mysql56
+    brew install go automake libtool python git bison curl wget mysql56
     pip install --upgrade pip setuptools
     pip install virtualenv
     pip install MySQL-python
     pip install tox
+
     ```
-    
-6.  Install Java runtime from this URL: https://support.apple.com/kb/dl1572?locale=en_US
-    Apple only supports Java 6. If you need to install a newer version, this link might be helpful:
-    [http://osxdaily.com/2015/10/17/how-to-install-java-in-os-x-el-capitan/](http://osxdaily.com/2015/10/17/how-to-install-java-in-os-x-el-capitan/)
-    
-7.  The Vitess bootstrap script makes some checks for the go runtime, so it is recommended to have the following
-    commands in your ~/.profile or ~/.bashrc or ~/.zshrc:
-    
+
+6.  The Vitess bootstrap script makes some checks for the go runtime, so it is recommended to have the following
+    commands in your ~/.profile or ~/.bashrc or ~/.zshrc or ~/.bash_profile:
+
     ``` sh
-    export PATH=/usr/local/opt/go/libexec/bin:$PATH
-    export GOROOT=/usr/local/opt/go/libexec
+    export PATH="/usr/local/opt/mysql@5.6/bin:$PATH"
+    export PATH=/usr/local/go/bin:$PATH
+    export GOROOT=/usr/local/go
     ```
-    
-8.  There is a problem with installing the enum34 Python package using pip, so the following file has to be edited:
-    ```
-    /usr/local/opt/python/Frameworks/Python.framework/Versions/2.7/lib/python2.7/distutils/distutils.cfg
-    ```
-    
-    and this line:
-    
-    ```
-    prefix=/usr/local
-    ```
-    
-    has to be commented out:
-    
-    ```
-    # prefix=/usr/local
-    ```
-    
-    After running the ./bootstrap.sh script from the next step, you can revert the change.
-    
-9.  For the Vitess hostname resolving functions to work correctly, a new entry has to be added into the /etc/hosts file
+
+7.  For the Vitess hostname resolving functions to work correctly, a new entry has to be added into the /etc/hosts file
     with the current LAN IP address of the computer (preferably IPv4) and the current hostname, which you get by
     typing the 'hostname' command in the terminal.
-    
-    It is also a good idea to put the following line to [force the Go DNS resolver](https://golang.org/doc/go1.5#net) 
+
+    It is also a good idea to put the following line to [force the Go DNS resolver](https://golang.org/doc/go1.5#net)
     in your ~/.profile or ~/.bashrc or ~/.zshrc:
-    
+
     ```
     export GODEBUG=netdns=go
     ```
@@ -232,38 +210,40 @@ In addition, Vitess requires the software and libraries listed below.
 
 1.  Navigate to the directory where you want to download the Vitess
     source code and clone the Vitess Github repo. After doing so,
-    navigate to the `src/github.com/youtube/vitess` directory.
+    navigate to the `src/vitess.io/vitess` directory. For go to work
+    correctly, you should create a symbolic link to this inide your ${HOME}/go/src
 
     ``` sh
     cd $WORKSPACE
-    git clone https://github.com/youtube/vitess.git \
-        src/github.com/youtube/vitess
-    cd src/github.com/youtube/vitess
+    git clone https://github.com/vitessio/vitess.git \
+        src/vitess.io/vitess
+    ln -s src/vitess.io ${HOME}/go/src/vitess.io
+    cd ${HOME}/go/src/vitess.io/vitess
     ```
 
 1.  Set the `MYSQL_FLAVOR` environment variable. Choose the appropriate
     value for your database. This value is case-sensitive.
 
     ``` sh
-    export MYSQL_FLAVOR=MariaDB
+    # export MYSQL_FLAVOR=MariaDB
     # or (mandatory for OS X)
-    # export MYSQL_FLAVOR=MySQL56
+    export MYSQL_FLAVOR=MySQL56
     ```
 
 1.  If your selected database installed in a location other than `/usr/bin`,
     set the `VT_MYSQL_ROOT` variable to the root directory of your
-    MariaDB installation. For example, if MariaDB is installed in
+    MariaDB installation. For example, if mysql is installed in
     `/usr/local/mysql`, run the following command.
 
     ``` sh
-    export VT_MYSQL_ROOT=/usr/local/mysql
-    
+    # export VT_MYSQL_ROOT=/usr/local/mysql
+
     # on OS X, this is the correct value:
-    # export VT_MYSQL_ROOT=/usr/local/opt/mysql56
+    export VT_MYSQL_ROOT=/usr/local/opt/mysql@5.6
     ```
 
     Note that the command indicates that the `mysql` executable should
-    be found at `/usr/local/mysql/bin/mysql`.
+    be found at `/usr/local/opt/mysql@5.6/bin/mysql`.
 
 1.  Run `mysqld --version` and confirm that you
     are running the correct version of MariaDB or MySQL. The value should
@@ -274,7 +254,7 @@ In addition, Vitess requires the software and libraries listed below.
     If your machine requires a proxy to access the Internet, you will need
     to set the usual environment variables (e.g. `http_proxy`,
     `https_proxy`, `no_proxy`).
-    
+
     Run the boostrap.sh script:
 
     ``` sh
@@ -290,7 +270,7 @@ In addition, Vitess requires the software and libraries listed below.
 
     ``` sh
     # Remaining commands to build Vitess
-    . ./dev.env
+    source ./dev.env
     make build
     ```
 
@@ -351,7 +331,7 @@ pkill -f '(vtdataroot|VTDATAROOT)' # kill Vitess processes
 
 This error often means your disk is too slow. If you don't have access
 to an SSD, you can try [testing against a
-ramdisk](https://github.com/youtube/vitess/blob/master/doc/TestingOnARamDisk.md).
+ramdisk](https://github.com/vitessio/vitess/blob/master/doc/TestingOnARamDisk.md).
 
 ##### Connection refused to tablet, MySQL socket not found, etc.
 
@@ -380,11 +360,11 @@ lock service. ZooKeeper is included in the Vitess distribution.
 
     Some Linux distributions ship with default file descriptor limits
     that are too low for database servers. This issue could show up
-    as the database crashing with the message "too many open files".
+    as the database crashing with the message `too many open files`.
 
     Check the system-wide `file-max` setting as well as user-specific
     `ulimit` values. We recommend setting them above 100K to be safe.
-    The exact [procedure](http://www.cyberciti.biz/faq/linux-increase-the-maximum-number-of-open-files/)
+    The exact [procedure](https://www.cyberciti.biz/faq/linux-increase-the-maximum-number-of-open-files/)
      may vary depending on your Linux distribution.
 
 1.  **Configure environment variables**
@@ -397,7 +377,7 @@ lock service. ZooKeeper is included in the Vitess distribution.
     variables required before running the scripts are `VTROOT` and `VTDATAROOT`.
 
     Set `VTROOT` to the parent of the Vitess source tree. For example, if you
-    ran `make build` while in `$HOME/vt/src/github.com/youtube/vitess`,
+    ran `make build` while in `$HOME/vt/src/vitess.io/vitess`,
     then you should set:
 
     ``` sh
@@ -411,14 +391,14 @@ lock service. ZooKeeper is included in the Vitess distribution.
     export VTDATAROOT=$HOME/vtdataroot
     ```
 
-1.  **Start ZooKeeper**
+1.  **Start ZooKeeper or Etcd**
 
     Servers in a Vitess cluster find each other by looking for
     dynamic configuration data stored in a distributed lock
     service. The following script creates a small ZooKeeper cluster:
 
     ``` sh
-    $ cd $VTROOT/src/github.com/youtube/vitess/examples/local
+    $ cd $VTROOT/src/vitess.io/vitess/examples/local
     vitess/examples/local$ ./zk-up.sh
     ### example output:
     # Starting zk servers...
@@ -433,6 +413,20 @@ lock service. ZooKeeper is included in the Vitess distribution.
     variable to point to the global ZooKeeper instance. The global instance in
     turn is configured to point to the local instance. In our sample scripts,
     they are both hosted in the same ZooKeeper service.
+
+    If you want to use Etcd as a distributed lock service, The following script
+    creates a Etcd instance:
+
+    ``` sh
+    $ cd $VTROOT/src/vitess.io/vitess/examples/local
+    vitess/examples/local$ source ./topo-etcd2.sh
+    vitess/examples/local$ ./etcd-up.sh
+    ### example output:
+    # enter etcd2 env
+    # etcdmain: etcd Version: 3.X.X
+    # ...
+    # etcd start done...
+    ```
 
 1.  **Start vtctld**
 
@@ -468,9 +462,8 @@ lock service. ZooKeeper is included in the Vitess distribution.
 1.  **Start vttablets**
 
     The `vttablet-up.sh` script brings up three vttablets, and assigns them to
-    a [keyspace]({% link overview/concepts.md %}#keyspace) and [shard]
-    ({% link overview/concepts.md %}#shard) according to the variables
-    set at the top of the script file.
+    a [keyspace]({% link overview/concepts.md %}#keyspace) and [shard]({% link overview/concepts.md %}#shard)
+    according to the variables set at the top of the script file.
 
     ``` sh
     vitess/examples/local$ ./vttablet-up.sh
@@ -490,9 +483,8 @@ lock service. ZooKeeper is included in the Vitess distribution.
     see a keyspace named `test_keyspace` with a single shard named `0`.
     This is what an unsharded keyspace looks like.
 
-    If you click on the shard box, you'll see a list of [tablets]
-    ({% link overview/concepts.md %}#tablet) in that shard.
-    Note that it's normal for the tablets to be unhealthy at this point, since
+    If you click on the shard box, you'll see a list of [tablets]({% link overview/concepts.md %}#tablet)
+    in that shard. Note that it's normal for the tablets to be unhealthy at this point, since
     you haven't initialized them yet.
 
     You can also click the **STATUS** link on each tablet to be taken to its
@@ -591,11 +583,11 @@ lock service. ZooKeeper is included in the Vitess distribution.
     In the examples, we are just using a single database with no specific
     configuration. So we just need to make that (empty) configuration visible
     for serving. This is done by running the following command:
-    
+
     ``` sh
     vitess/examples/local$ ./lvtctl.sh RebuildVSchemaGraph
     ```
-    
+
     (As it works, this command will not display any output.)
 
 1.  **Start vtgate**
@@ -656,7 +648,7 @@ Each `-up.sh` script has a corresponding `-down.sh` script to stop the servers.
 vitess/examples/local$ ./vtgate-down.sh
 vitess/examples/local$ ./vttablet-down.sh
 vitess/examples/local$ ./vtctld-down.sh
-vitess/examples/local$ ./zk-down.sh
+vitess/examples/local$ ./zk-down.sh  # If you use Etcd, run ./etcd-down.sh
 ```
 
 Note that the `-down.sh` scripts will leave behind any data files created.

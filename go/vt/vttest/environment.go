@@ -27,7 +27,7 @@ import (
 	"time"
 
 	// we use gRPC everywhere, so import the vtgate client.
-	_ "github.com/youtube/vitess/go/vt/vtgate/grpcvtgateconn"
+	_ "vitess.io/vitess/go/vt/vtgate/grpcvtgateconn"
 )
 
 // Environment is the interface that customizes the global settings for
@@ -118,10 +118,16 @@ func GetMySQLOptions(flavor string) (string, []string, error) {
 
 	mycnf := []string{"config/mycnf/vtcombo.cnf"}
 	switch flavor {
+	case "MariaDB103":
+		mycnf = append(mycnf, "config/mycnf/default-fast.cnf")
+		mycnf = append(mycnf, "config/mycnf/master_mariadb103.cnf")
 	case "MariaDB":
 		mycnf = append(mycnf, "config/mycnf/default-fast.cnf")
 		mycnf = append(mycnf, "config/mycnf/master_mariadb.cnf")
 
+	case "MySQL80":
+		mycnf = append(mycnf, "config/mycnf/default-fast.cnf")
+		mycnf = append(mycnf, "config/mycnf/master_mysql80.cnf")
 	case "MySQL56":
 		mycnf = append(mycnf, "config/mycnf/default-fast.cnf")
 		mycnf = append(mycnf, "config/mycnf/master_mysql56.cnf")
@@ -154,7 +160,7 @@ func (env *LocalTestEnv) MySQLManager(mycnf []string, snapshot string) (MySQLMan
 		InitFile:  path.Join(os.Getenv("VTTOP"), "config/init_db.sql"),
 		Directory: env.TmpPath,
 		Port:      env.PortForProtocol("mysql", ""),
-		MyCnf:     append(mycnf, env.DefaultMyCnf...),
+		MyCnf:     append(env.DefaultMyCnf, mycnf...),
 		Env:       env.EnvVars(),
 	}, nil
 }
@@ -216,9 +222,6 @@ func (env *LocalTestEnv) TearDown() error {
 
 func tmpdir(dataroot string) (dir string, err error) {
 	dir, err = ioutil.TempDir(dataroot, "vttest")
-	if err == nil {
-		err = os.Mkdir(path.Join(dir, "logs"), 0700)
-	}
 	return
 }
 
@@ -244,12 +247,22 @@ func randomPort() int {
 // given MySQL flavor. This will use the `mysqlctl` command to initialize and
 // teardown a single mysqld instance.
 func NewLocalTestEnv(flavor string, basePort int) (*LocalTestEnv, error) {
-	flavor, mycnf, err := GetMySQLOptions(flavor)
+	directory, err := tmpdir(os.Getenv("VTDATAROOT"))
+	if err != nil {
+		return nil, err
+	}
+	return NewLocalTestEnvWithDirectory(flavor, basePort, directory)
+}
+
+// NewLocalTestEnvWithDirectory returns a new instance of the default test
+// environment with a directory explicitly specified.
+func NewLocalTestEnvWithDirectory(flavor string, basePort int, directory string) (*LocalTestEnv, error) {
+	err := os.Mkdir(path.Join(directory, "logs"), 0700)
 	if err != nil {
 		return nil, err
 	}
 
-	directory, err := tmpdir(os.Getenv("VTDATAROOT"))
+	flavor, mycnf, err := GetMySQLOptions(flavor)
 	if err != nil {
 		return nil, err
 	}
@@ -280,5 +293,5 @@ func init() {
 // NewDefaultEnv is an user-configurable callback that returns a new Environment
 // instance with the default settings.
 // This callback is only used in cases where the user hasn't explicitly set
-// the Env variable when intializing a LocalCluster
+// the Env variable when initializing a LocalCluster
 var NewDefaultEnv = defaultEnvFactory

@@ -21,10 +21,9 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vtgate/engine"
-	"github.com/youtube/vitess/go/vt/vtgate/vindexes"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vtgate/engine"
 )
 
 var _ builder = (*orderedAggregate)(nil)
@@ -55,7 +54,6 @@ var _ builder = (*orderedAggregate)(nil)
 //      Input: (Scatter Route with the order by request),
 //    }
 type orderedAggregate struct {
-	symtab        *symtab
 	resultColumns []*resultColumn
 	order         int
 	input         *route
@@ -64,11 +62,12 @@ type orderedAggregate struct {
 
 // checkAggregates analyzes the select expression for aggregates. If it determines
 // that a primitive is needed to handle the aggregation, it builds an orderedAggregate
-// primitive and returns it.
-func checkAggregates(sel *sqlparser.Select, bldr builder) (builder, error) {
-	rb, isRoute := bldr.(*route)
-	if isRoute && rb.IsSingle() {
-		return bldr, nil
+// primitive and returns it. It returns a groupByHandler if there is aggregation it
+// can handle.
+func (pb *primitiveBuilder) checkAggregates(sel *sqlparser.Select) (groupByHandler, error) {
+	rb, isRoute := pb.bldr.(*route)
+	if isRoute && rb.removeMultishardOptions() {
+		return rb, nil
 	}
 
 	// Check if we can allow aggregates.
@@ -82,7 +81,7 @@ func checkAggregates(sel *sqlparser.Select, bldr builder) (builder, error) {
 		hasAggregates = true
 	}
 	if !hasAggregates {
-		return bldr, nil
+		return rb, nil
 	}
 
 	// The query has aggregates. We can proceed only
@@ -90,7 +89,7 @@ func checkAggregates(sel *sqlparser.Select, bldr builder) (builder, error) {
 	// we need the ability to push down group by and
 	// order by clauses.
 	if !isRoute {
-		return bldr, errors.New("unsupported: cross-shard query with aggregates")
+		return nil, errors.New("unsupported: cross-shard query with aggregates")
 	}
 
 	// If there is a distinct clause, we can check the select list
@@ -103,14 +102,20 @@ func checkAggregates(sel *sqlparser.Select, bldr builder) (builder, error) {
 	// shards, which will require us to perform the grouping
 	// at the vtgate level.
 	if sel.Distinct != "" {
-		for _, selectExpr := range sel.SelectExprs {
-			switch selectExpr := selectExpr.(type) {
-			case *sqlparser.AliasedExpr:
-				vindex := bldr.Symtab().Vindex(selectExpr.Expr, rb)
-				if vindex != nil && vindexes.IsUnique(vindex) {
-					return bldr, nil
+		success := rb.removeOptions(func(ro *routeOption) bool {
+			for _, selectExpr := range sel.SelectExprs {
+				switch selectExpr := selectExpr.(type) {
+				case *sqlparser.AliasedExpr:
+					vindex := ro.FindVindex(pb, selectExpr.Expr)
+					if vindex != nil && vindex.IsUnique() {
+						return true
+					}
 				}
 			}
+			return false
+		})
+		if success {
+			return rb, nil
 		}
 	}
 
@@ -121,17 +126,18 @@ func checkAggregates(sel *sqlparser.Select, bldr builder) (builder, error) {
 	// the grouping can be done at the shard level, which allows the entire query
 	// to be pushed down. In order to perform this analysis, we're going to look
 	// ahead at the group by clause to see if it references a unique vindex.
-	if groupByHasUniqueVindex(sel, bldr, rb) {
-		return bldr, nil
+	if pb.groupByHasUniqueVindex(sel, rb) {
+		return rb, nil
 	}
 
 	// We need an aggregator primitive.
-	return &orderedAggregate{
-		symtab: rb.Symtab(),
-		order:  rb.Order() + 1,
-		input:  rb,
-		eaggr:  &engine.OrderedAggregate{},
-	}, nil
+	oa := &orderedAggregate{
+		order: rb.Order() + 1,
+		input: rb,
+		eaggr: &engine.OrderedAggregate{},
+	}
+	pb.bldr = oa
+	return oa, nil
 }
 
 func nodeHasAggregates(node sqlparser.SQLNode) bool {
@@ -175,41 +181,43 @@ func nodeHasAggregates(node sqlparser.SQLNode) bool {
 // we don't search the ResultColumns because they're not created yet. Also,
 // error conditions are treated as no match for simplicity; They will be
 // subsequently caught downstream.
-func groupByHasUniqueVindex(sel *sqlparser.Select, bldr builder, rb *route) bool {
-	for _, expr := range sel.GroupBy {
-		var matchedExpr sqlparser.Expr
-		switch node := expr.(type) {
-		case *sqlparser.ColName:
-			if expr := findAlias(node, sel.SelectExprs); expr != nil {
-				matchedExpr = expr
-			} else {
-				matchedExpr = node
-			}
-		case *sqlparser.SQLVal:
-			if node.Type != sqlparser.IntVal {
+func (pb *primitiveBuilder) groupByHasUniqueVindex(sel *sqlparser.Select, rb *route) bool {
+	return rb.removeOptions(func(ro *routeOption) bool {
+		for _, expr := range sel.GroupBy {
+			var matchedExpr sqlparser.Expr
+			switch node := expr.(type) {
+			case *sqlparser.ColName:
+				if expr := findAlias(node, sel.SelectExprs); expr != nil {
+					matchedExpr = expr
+				} else {
+					matchedExpr = node
+				}
+			case *sqlparser.SQLVal:
+				if node.Type != sqlparser.IntVal {
+					continue
+				}
+				num, err := strconv.ParseInt(string(node.Val), 0, 64)
+				if err != nil {
+					continue
+				}
+				if num < 1 || num > int64(len(sel.SelectExprs)) {
+					continue
+				}
+				expr, ok := sel.SelectExprs[num-1].(*sqlparser.AliasedExpr)
+				if !ok {
+					continue
+				}
+				matchedExpr = expr.Expr
+			default:
 				continue
 			}
-			num, err := strconv.ParseInt(string(node.Val), 0, 64)
-			if err != nil {
-				continue
+			vindex := ro.FindVindex(pb, matchedExpr)
+			if vindex != nil && vindex.IsUnique() {
+				return true
 			}
-			if num < 1 || num > int64(len(sel.SelectExprs)) {
-				continue
-			}
-			expr, ok := sel.SelectExprs[num-1].(*sqlparser.AliasedExpr)
-			if !ok {
-				continue
-			}
-			matchedExpr = expr.Expr
-		default:
-			continue
 		}
-		vindex := bldr.Symtab().Vindex(matchedExpr, rb)
-		if vindex != nil && vindexes.IsUnique(vindex) {
-			return true
-		}
-	}
-	return false
+		return false
+	})
 }
 
 func findAlias(colname *sqlparser.ColName, selects sqlparser.SelectExprs) sqlparser.Expr {
@@ -230,24 +238,15 @@ func findAlias(colname *sqlparser.ColName, selects sqlparser.SelectExprs) sqlpar
 	return nil
 }
 
-// Symtab satisfies the builder interface.
-func (oa *orderedAggregate) Symtab() *symtab {
-	return oa.symtab
-}
-
-// MaxOrder satisfies the builder interface.
-func (oa *orderedAggregate) MaxOrder() int {
-	return oa.order
-}
-
-// Order returns the order.
+// Order satisfies the builder interface.
 func (oa *orderedAggregate) Order() int {
 	return oa.order
 }
 
-// SetOrder satisfies the builder interface.
-func (oa *orderedAggregate) SetOrder(order int) {
-	panic("BUG: reordering can only happen within the FROM clause")
+// Reorder satisfies the builder interface.
+func (oa *orderedAggregate) Reorder(order int) {
+	oa.input.Reorder(order)
+	oa.order = oa.input.Order() + 1
 }
 
 // Primitive satisfies the builder interface.
@@ -256,9 +255,9 @@ func (oa *orderedAggregate) Primitive() engine.Primitive {
 	return oa.eaggr
 }
 
-// Leftmost satisfies the builder interface.
-func (oa *orderedAggregate) Leftmost() columnOriginator {
-	return oa.input.Leftmost()
+// First satisfies the builder interface.
+func (oa *orderedAggregate) First() builder {
+	return oa.input.First()
 }
 
 // ResultColumns satisfies the builder interface.
@@ -267,7 +266,7 @@ func (oa *orderedAggregate) ResultColumns() []*resultColumn {
 }
 
 // PushFilter satisfies the builder interface.
-func (oa *orderedAggregate) PushFilter(_ sqlparser.Expr, whereType string, _ columnOriginator) error {
+func (oa *orderedAggregate) PushFilter(_ *primitiveBuilder, _ sqlparser.Expr, whereType string, _ builder) error {
 	return errors.New("unsupported: filtering on results of aggregates")
 }
 
@@ -281,9 +280,9 @@ func (oa *orderedAggregate) PushFilter(_ sqlparser.Expr, whereType string, _ col
 // be performed 'as they come'. In this respect, oa is the originator for
 // aggregate expressions like MAX, which will be added to symtab. The underlying
 // MAX sent to the route will not be added to symtab and will not be reachable by
-// others. This functionality depends on the the PushOrderBy to request that
+// others. This functionality depends on the PushOrderBy to request that
 // the rows be correctly ordered for a merge sort.
-func (oa *orderedAggregate) PushSelect(expr *sqlparser.AliasedExpr, origin columnOriginator) (rc *resultColumn, colnum int, err error) {
+func (oa *orderedAggregate) PushSelect(expr *sqlparser.AliasedExpr, origin builder) (rc *resultColumn, colnum int, err error) {
 	if inner, ok := expr.Expr.(*sqlparser.FuncExpr); ok {
 		if opcode, ok := engine.SupportedAggregates[inner.Name.Lowered()]; ok {
 			innerRC, innerCol, _ := oa.input.PushSelect(expr, origin)
@@ -373,7 +372,7 @@ func (oa *orderedAggregate) SetGroupBy(groupBy sqlparser.GroupBy) error {
 // 'select a, b, count(*) from t group by a, b order by b'
 // The following construct is not allowed:
 // 'select a, count(*) from t group by a order by count(*)'
-func (oa *orderedAggregate) PushOrderBy(orderBy sqlparser.OrderBy) error {
+func (oa *orderedAggregate) PushOrderBy(pb *primitiveBuilder, orderBy sqlparser.OrderBy) error {
 	// Treat order by null as nil order by.
 	if len(orderBy) == 1 {
 		if _, ok := orderBy[0].Expr.(*sqlparser.NullVal); ok {
@@ -394,7 +393,7 @@ func (oa *orderedAggregate) PushOrderBy(orderBy sqlparser.OrderBy) error {
 			}
 			orderByCol = oa.input.ResultColumns()[num].column
 		case *sqlparser.ColName:
-			_, _, err := oa.Symtab().Find(expr)
+			_, _, err := pb.st.Find(expr)
 			if err != nil {
 				return fmt.Errorf("invalid order by: %v", err)
 			}

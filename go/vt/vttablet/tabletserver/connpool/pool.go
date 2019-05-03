@@ -22,15 +22,16 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/pools"
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/vt/callerid"
-	"github.com/youtube/vitess/go/vt/dbconnpool"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/pools"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/trace"
+	"vitess.io/vitess/go/vt/callerid"
+	"vitess.io/vitess/go/vt/dbconnpool"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 // ErrConnPoolClosed is returned when the connection pool is closed.
@@ -75,22 +76,22 @@ func New(
 	cp := &Pool{
 		capacity:    capacity,
 		idleTimeout: idleTimeout,
-		dbaPool:     dbconnpool.NewConnectionPool("", 1, idleTimeout),
+		dbaPool:     dbconnpool.NewConnectionPool("", 1, idleTimeout, 0),
 		checker:     checker,
 	}
 	if name == "" || usedNames[name] {
 		return cp
 	}
 	usedNames[name] = true
-	stats.Publish(name+"Capacity", stats.IntFunc(cp.Capacity))
-	stats.Publish(name+"Available", stats.IntFunc(cp.Available))
-	stats.Publish(name+"Active", stats.IntFunc(cp.Active))
-	stats.Publish(name+"InUse", stats.IntFunc(cp.InUse))
-	stats.Publish(name+"MaxCap", stats.IntFunc(cp.MaxCap))
-	stats.Publish(name+"WaitCount", stats.IntFunc(cp.WaitCount))
-	stats.Publish(name+"WaitTime", stats.DurationFunc(cp.WaitTime))
-	stats.Publish(name+"IdleTimeout", stats.DurationFunc(cp.IdleTimeout))
-	stats.Publish(name+"IdleClosed", stats.IntFunc(cp.IdleClosed))
+	stats.NewGaugeFunc(name+"Capacity", "Tablet server conn pool capacity", cp.Capacity)
+	stats.NewGaugeFunc(name+"Available", "Tablet server conn pool available", cp.Available)
+	stats.NewGaugeFunc(name+"Active", "Tablet server conn pool active", cp.Active)
+	stats.NewGaugeFunc(name+"InUse", "Tablet server conn pool in use", cp.InUse)
+	stats.NewGaugeFunc(name+"MaxCap", "Tablet server conn pool max cap", cp.MaxCap)
+	stats.NewCounterFunc(name+"WaitCount", "Tablet server conn pool wait count", cp.WaitCount)
+	stats.NewCounterDurationFunc(name+"WaitTime", "Tablet server wait time", cp.WaitTime)
+	stats.NewGaugeDurationFunc(name+"IdleTimeout", "Tablet server idle timeout", cp.IdleTimeout)
+	stats.NewCounterFunc(name+"IdleClosed", "Tablet server conn pool idle closed", cp.IdleClosed)
 	return cp
 }
 
@@ -134,6 +135,9 @@ func (cp *Pool) Close() {
 // Get returns a connection.
 // You must call Recycle on DBConn once done.
 func (cp *Pool) Get(ctx context.Context) (*DBConn, error) {
+	span, ctx := trace.NewSpan(ctx, "Pool.Get")
+	defer span.Finish()
+
 	if cp.isCallerIDAppDebug(ctx) {
 		return NewDBConnNoPool(cp.appDebugParams, cp.dbaPool)
 	}
@@ -141,6 +145,11 @@ func (cp *Pool) Get(ctx context.Context) (*DBConn, error) {
 	if p == nil {
 		return nil, ErrConnPoolClosed
 	}
+	span.Annotate("capacity", p.Capacity())
+	span.Annotate("in_use", p.InUse())
+	span.Annotate("available", p.Available())
+	span.Annotate("active", p.Active())
+
 	r, err := p.Get(ctx)
 	if err != nil {
 		return nil, err
@@ -277,9 +286,9 @@ func (cp *Pool) IdleClosed() int64 {
 }
 
 func (cp *Pool) isCallerIDAppDebug(ctx context.Context) bool {
-	callerID := callerid.ImmediateCallerIDFromContext(ctx)
-	if cp.appDebugParams.Uname == "" {
+	if cp.appDebugParams == nil || cp.appDebugParams.Uname == "" {
 		return false
 	}
+	callerID := callerid.ImmediateCallerIDFromContext(ctx)
 	return callerID != nil && callerID.Username == cp.appDebugParams.Uname
 }

@@ -22,9 +22,8 @@ import (
 
 	"golang.org/x/net/context"
 
-	log "github.com/golang/glog"
-
-	"github.com/youtube/vitess/go/vt/worker/vtworkerclient"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/worker/vtworkerclient"
 )
 
 // ExecuteVtworker executes the vtworker command in "args" via an RPC to

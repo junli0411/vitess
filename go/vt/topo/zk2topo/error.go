@@ -20,26 +20,26 @@ import (
 	"github.com/samuel/go-zookeeper/zk"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo"
 )
 
 // Error codes returned by the zookeeper Go client:
-func convertError(err error) error {
+func convertError(err error, node string) error {
 	switch err {
 	case zk.ErrBadVersion:
-		return topo.ErrBadVersion
+		return topo.NewError(topo.BadVersion, node)
 	case zk.ErrNoNode:
-		return topo.ErrNoNode
+		return topo.NewError(topo.NoNode, node)
 	case zk.ErrNodeExists:
-		return topo.ErrNodeExists
+		return topo.NewError(topo.NodeExists, node)
 	case zk.ErrNotEmpty:
-		return topo.ErrNotEmpty
+		return topo.NewError(topo.NodeNotEmpty, node)
 	case zk.ErrSessionExpired:
-		return topo.ErrTimeout
+		return topo.NewError(topo.Timeout, node)
 	case context.Canceled:
-		return topo.ErrInterrupted
+		return topo.NewError(topo.Interrupted, node)
 	case context.DeadlineExceeded:
-		return topo.ErrTimeout
+		return topo.NewError(topo.Timeout, node)
 	}
 	return err
 }

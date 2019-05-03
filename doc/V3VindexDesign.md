@@ -12,7 +12,7 @@ Some changes have been made to the system since the last time the doc was writte
 * There's one VSchema per keyspace instead of a global one.
 * The concept of Table Class has been eliminated.
 * A new `sequence` table has been introduced, and sequences are orthogonal to vindexes. Any column can now be tied to a sequence.
-* We've introduced the concept of a pinned table, which allows an unsharded table to be pinned to a keypsace id, allowing you to avoid creating a separate keyspace for tiny tables. This is yet to be implemented.
+* We've introduced the concept of a pinned table, which allows an unsharded table to be pinned to a keyspace id, allowing you to avoid creating a separate keyspace for tiny tables. This is yet to be implemented.
 * Instead of a vschema editor, the DDL language will be extended to manage vindexes, and the DDL deployment tools will perform the necessary work.
 
 ## Objective
@@ -251,7 +251,7 @@ When you fire up the schema editor, it should take you to the load workflow. The
 
 The schema picks up the loaded JSON, parse it and display the various components of the schema in a page where the relationships are easily visualized. The vschema has four main components: keyspaces, tables, table classes and vindexes.
 
-Keyspaces can be on a left navbar. Once you select the keyspaces, it will display the the rest of the three components in one column each.
+Keyspaces can be on a left navbar. Once you select the keyspaces, it will display the rest of the three components in one column each.
 
 The schema editor will sanity check the JSON file for inconsistencies and flag them using various color codes:
 

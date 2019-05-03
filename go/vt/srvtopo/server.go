@@ -23,14 +23,18 @@ package srvtopo
 import (
 	"golang.org/x/net/context"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vschemapb "github.com/youtube/vitess/go/vt/proto/vschema"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vschemapb "vitess.io/vitess/go/vt/proto/vschema"
+	"vitess.io/vitess/go/vt/topo"
 )
 
 // Server is a subset of the topo.Server API that only contains
 // the serving graph read-only calls used by clients to resolve
 // serving addresses, and to get VSchema.
 type Server interface {
+	// GetTopoServer returns the full topo.Server instance.
+	GetTopoServer() (*topo.Server, error)
+
 	// GetSrvKeyspaceNames returns the list of keyspaces served in
 	// the provided cell.
 	GetSrvKeyspaceNames(ctx context.Context, cell string) ([]string, error)

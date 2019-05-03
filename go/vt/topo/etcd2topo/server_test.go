@@ -28,11 +28,11 @@ import (
 	"golang.org/x/net/context"
 
 	"github.com/coreos/etcd/clientv3"
-	"github.com/youtube/vitess/go/testfiles"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/test"
+	"vitess.io/vitess/go/testfiles"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/test"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // startEtcd starts an etcd subprocess, and waits for it to be ready.
@@ -80,7 +80,7 @@ func startEtcd(t *testing.T) (*exec.Cmd, string, string) {
 		if _, err := cli.Get(ctx, "/"); err == nil {
 			break
 		}
-		if time.Now().Sub(start) > 10*time.Second {
+		if time.Since(start) > 10*time.Second {
 			t.Fatalf("Failed to start etcd daemon in time")
 		}
 		time.Sleep(10 * time.Millisecond)

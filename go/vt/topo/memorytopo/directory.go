@@ -17,11 +17,11 @@ limitations under the License.
 package memorytopo
 
 import (
-	"fmt"
-
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo"
 )
 
 // ListDir is part of the topo.Conn interface.
@@ -41,12 +41,12 @@ func (c *Conn) ListDir(ctx context.Context, dirPath string, full bool) ([]topo.D
 	// Get the node to list.
 	n := c.factory.nodeByPath(c.cell, dirPath)
 	if n == nil {
-		return nil, topo.ErrNoNode
+		return nil, topo.NewError(topo.NoNode, dirPath)
 	}
 
 	// Check it's a directory.
 	if !n.isDirectory() {
-		return nil, fmt.Errorf("node %v in cell %v is not a directory", dirPath, c.cell)
+		return nil, vterrors.Errorf(vtrpc.Code_INVALID_ARGUMENT, "node %v in cell %v is not a directory", dirPath, c.cell)
 	}
 
 	result := make([]topo.DirEntry, 0, len(n.children))

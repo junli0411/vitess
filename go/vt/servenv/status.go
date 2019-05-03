@@ -22,6 +22,7 @@ import (
 	"html"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,8 +30,8 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/acl"
+	"vitess.io/vitess/go/acl"
+	"vitess.io/vitess/go/vt/log"
 )
 
 var (
@@ -58,8 +59,8 @@ func AddStatusFuncs(fmap template.FuncMap) {
 	defer statusMu.Unlock()
 
 	for name, fun := range fmap {
-		if !strings.HasPrefix(name, "github_com_youtube_vitess_") {
-			panic("status func registered without proper prefix, need github_com_youtube_vitess_:" + name)
+		if !strings.HasPrefix(name, "github_com_vitessio_vitess_") {
+			panic("status func registered without proper prefix, need github_com_vitessio_vitess_:" + name)
 		}
 		if _, ok := statusFuncMap[name]; ok {
 			panic("duplicate status func registered: " + name)
@@ -184,7 +185,9 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := statusTmpl.ExecuteTemplate(w, "status", data); err != nil {
-		log.Errorf("servenv: couldn't execute template: %v", err)
+		if _, ok := err.(net.Error); !ok {
+			log.Errorf("servenv: couldn't execute template: %v", err)
+		}
 	}
 }
 

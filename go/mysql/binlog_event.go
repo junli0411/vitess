@@ -19,7 +19,7 @@ package mysql
 import (
 	"fmt"
 
-	binlogdatapb "github.com/youtube/vitess/go/vt/proto/binlogdata"
+	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
 )
 
 // BinlogEvent represents a single event from a raw MySQL binlog dump stream.
@@ -70,13 +70,13 @@ type BinlogEvent interface {
 
 	// RBR events.
 
-	// IsTableMapEvent returns true if this is a TABLE_MAP_EVENT.
+	// IsTableMap returns true if this is a TABLE_MAP_EVENT.
 	IsTableMap() bool
-	// IsWriteRowsEvent returns true if this is a WRITE_ROWS_EVENT.
+	// IsWriteRows returns true if this is a WRITE_ROWS_EVENT.
 	IsWriteRows() bool
-	// IsUpdateRowsEvent returns true if this is a UPDATE_ROWS_EVENT.
+	// IsUpdateRows returns true if this is a UPDATE_ROWS_EVENT.
 	IsUpdateRows() bool
-	// IsDeleteRowsEvent returns true if this is a DELETE_ROWS_EVENT.
+	// IsDeleteRows returns true if this is a DELETE_ROWS_EVENT.
 	IsDeleteRows() bool
 
 	// Timestamp returns the timestamp from the event header.
@@ -119,6 +119,9 @@ type BinlogEvent interface {
 	// checksum stripped off, if any. If there is no checksum, it returns
 	// the same event and a nil checksum.
 	StripChecksum(BinlogFormat) (ev BinlogEvent, checksum []byte, err error)
+
+	// IsPseudo is for custom implemetations of GTID.
+	IsPseudo() bool
 }
 
 // BinlogFormat contains relevant data from the FORMAT_DESCRIPTION_EVENT.

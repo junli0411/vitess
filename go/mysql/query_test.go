@@ -24,9 +24,9 @@ import (
 
 	"github.com/golang/protobuf/proto"
 
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sqltypes"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 func TestComInitDB(t *testing.T) {
@@ -48,6 +48,31 @@ func TestComInitDB(t *testing.T) {
 	db := sConn.parseComInitDB(data)
 	if db != "my_db" {
 		t.Errorf("parseComInitDB returned unexpected data: %v", db)
+	}
+}
+
+func TestComSetOption(t *testing.T) {
+	listener, sConn, cConn := createSocketPair(t)
+	defer func() {
+		listener.Close()
+		sConn.Close()
+		cConn.Close()
+	}()
+
+	// Write ComSetOption packet, read it, compare.
+	if err := cConn.writeComSetOption(1); err != nil {
+		t.Fatalf("writeComSetOption failed: %v", err)
+	}
+	data, err := sConn.ReadPacket()
+	if err != nil || len(data) == 0 || data[0] != ComSetOption {
+		t.Fatalf("sConn.ReadPacket - ComSetOption failed: %v %v", data, err)
+	}
+	operation, ok := sConn.parseComSetOption(data)
+	if !ok {
+		t.Fatalf("parseComSetOption failed unexpectedly")
+	}
+	if operation != 1 {
+		t.Errorf("parseComSetOption returned unexpected data: %v", operation)
 	}
 }
 
@@ -275,20 +300,24 @@ func checkQuery(t *testing.T, query string, sConn, cConn *Conn, result *sqltypes
 
 	sConn.Capabilities = 0
 	cConn.Capabilities = 0
-	checkQueryInternal(t, query, sConn, cConn, result, true /* wantfields */, true /* allRows */)
-	checkQueryInternal(t, query, sConn, cConn, result, false /* wantfields */, true /* allRows */)
-	checkQueryInternal(t, query, sConn, cConn, result, true /* wantfields */, false /* allRows */)
-	checkQueryInternal(t, query, sConn, cConn, result, false /* wantfields */, false /* allRows */)
+	checkQueryInternal(t, query, sConn, cConn, result, true /* wantfields */, true /* allRows */, false /* warnings */)
+	checkQueryInternal(t, query, sConn, cConn, result, false /* wantfields */, true /* allRows */, false /* warnings */)
+	checkQueryInternal(t, query, sConn, cConn, result, true /* wantfields */, false /* allRows */, false /* warnings */)
+	checkQueryInternal(t, query, sConn, cConn, result, false /* wantfields */, false /* allRows */, false /* warnings */)
+
+	checkQueryInternal(t, query, sConn, cConn, result, true /* wantfields */, true /* allRows */, true /* warnings */)
 
 	sConn.Capabilities = CapabilityClientDeprecateEOF
 	cConn.Capabilities = CapabilityClientDeprecateEOF
-	checkQueryInternal(t, query, sConn, cConn, result, true /* wantfields */, true /* allRows */)
-	checkQueryInternal(t, query, sConn, cConn, result, false /* wantfields */, true /* allRows */)
-	checkQueryInternal(t, query, sConn, cConn, result, true /* wantfields */, false /* allRows */)
-	checkQueryInternal(t, query, sConn, cConn, result, false /* wantfields */, false /* allRows */)
+	checkQueryInternal(t, query, sConn, cConn, result, true /* wantfields */, true /* allRows */, false /* warnings */)
+	checkQueryInternal(t, query, sConn, cConn, result, false /* wantfields */, true /* allRows */, false /* warnings */)
+	checkQueryInternal(t, query, sConn, cConn, result, true /* wantfields */, false /* allRows */, false /* warnings */)
+	checkQueryInternal(t, query, sConn, cConn, result, false /* wantfields */, false /* allRows */, false /* warnings */)
+
+	checkQueryInternal(t, query, sConn, cConn, result, true /* wantfields */, true /* allRows */, true /* warnings */)
 }
 
-func checkQueryInternal(t *testing.T, query string, sConn, cConn *Conn, result *sqltypes.Result, wantfields, allRows bool) {
+func checkQueryInternal(t *testing.T, query string, sConn, cConn *Conn, result *sqltypes.Result, wantfields, allRows, warnings bool) {
 
 	if sConn.Capabilities&CapabilityClientDeprecateEOF > 0 {
 		query += " NOEOF"
@@ -306,6 +335,15 @@ func checkQueryInternal(t *testing.T, query string, sConn, cConn *Conn, result *
 		query += " PARTIAL"
 	}
 
+	var warningCount uint16
+	if warnings {
+		query += " WARNINGS"
+		warningCount = 99
+	} else {
+		query += " NOWARNINGS"
+	}
+
+	var fatalError string
 	// Use a go routine to run ExecuteFetch.
 	wg := sync.WaitGroup{}
 	wg.Add(1)
@@ -318,15 +356,20 @@ func checkQueryInternal(t *testing.T, query string, sConn, cConn *Conn, result *
 			// Asking for just one row max. The results that have more will fail.
 			maxrows = 1
 		}
-		got, err := cConn.ExecuteFetch(query, maxrows, wantfields)
+		got, gotWarnings, err := cConn.ExecuteFetchWithWarningCount(query, maxrows, wantfields)
 		if !allRows && len(result.Rows) > 1 {
 			if err == nil {
 				t.Errorf("ExecuteFetch should have failed but got: %v", got)
 			}
+			sqlErr, ok := err.(*SQLError)
+			if !ok || sqlErr.Number() != ERVitessMaxRowsExceeded {
+				t.Errorf("Expected ERVitessMaxRowsExceeded %v, got %v", ERVitessMaxRowsExceeded, sqlErr.Number())
+			}
 			return
 		}
 		if err != nil {
-			t.Fatalf("executeFetch failed: %v", err)
+			fatalError = fmt.Sprintf("executeFetch failed: %v", err)
+			return
 		}
 		expected := *result
 		if !wantfields {
@@ -339,20 +382,27 @@ func checkQueryInternal(t *testing.T, query string, sConn, cConn *Conn, result *
 					t.Logf("Expected field(%v) = %v", i, expected.Fields[i])
 				}
 			}
-			t.Fatalf("ExecuteFetch(wantfields=%v) returned:\n%v\nBut was expecting:\n%v", wantfields, got, expected)
+			fatalError = fmt.Sprintf("ExecuteFetch(wantfields=%v) returned:\n%v\nBut was expecting:\n%v", wantfields, got, expected)
+			return
+		}
+
+		if gotWarnings != warningCount {
+			t.Errorf("ExecuteFetch(%v) expected %v warnings got %v", query, warningCount, gotWarnings)
 		}
 
 		// Test ExecuteStreamFetch, build a Result.
 		expected = *result
 		if err := cConn.ExecuteStreamFetch(query); err != nil {
-			t.Fatalf("ExecuteStreamFetch(%v) failed: %v", query, err)
+			fatalError = fmt.Sprintf("ExecuteStreamFetch(%v) failed: %v", query, err)
+			return
 		}
 		got = &sqltypes.Result{}
 		got.RowsAffected = result.RowsAffected
 		got.InsertID = result.InsertID
 		got.Fields, err = cConn.Fields()
 		if err != nil {
-			t.Fatalf("Fields(%v) failed: %v", query, err)
+			fatalError = fmt.Sprintf("Fields(%v) failed: %v", query, err)
+			return
 		}
 		if len(got.Fields) == 0 {
 			got.Fields = nil
@@ -360,7 +410,8 @@ func checkQueryInternal(t *testing.T, query string, sConn, cConn *Conn, result *
 		for {
 			row, err := cConn.FetchNext()
 			if err != nil {
-				t.Fatalf("FetchNext(%v) failed: %v", query, err)
+				fatalError = fmt.Sprintf("FetchNext(%v) failed: %v", query, err)
+				return
 			}
 			if row == nil {
 				// Done.
@@ -396,27 +447,26 @@ func checkQueryInternal(t *testing.T, query string, sConn, cConn *Conn, result *
 		count--
 	}
 
+	handler := testHandler{
+		result:   result,
+		warnings: warningCount,
+	}
+
 	for i := 0; i < count; i++ {
-		comQuery, err := sConn.ReadPacket()
+		err := sConn.handleNextCommand(&handler)
 		if err != nil {
-			t.Fatalf("server cannot read query: %v", err)
+			t.Fatalf("error handling command: %v", err)
 		}
-		if comQuery[0] != ComQuery {
-			t.Fatalf("server got bad packet: %v", comQuery)
-		}
-		got := sConn.parseComQuery(comQuery)
-		if got != query {
-			t.Errorf("server got query '%v' but expected '%v'", got, query)
-		}
-		if err := writeResult(sConn, result); err != nil {
-			t.Errorf("Error writing result to client: %v", err)
-		}
-		sConn.sequence = 0
 	}
 
 	wg.Wait()
+
+	if fatalError != "" {
+		t.Fatalf(fatalError)
+	}
 }
 
+//lint:ignore U1000 for now, because deleting this function causes more errors
 func writeResult(conn *Conn, result *sqltypes.Result) error {
 	if len(result.Fields) == 0 {
 		return conn.writeOKPacket(result.RowsAffected, result.InsertID, conn.StatusFlags, 0)
@@ -427,7 +477,7 @@ func writeResult(conn *Conn, result *sqltypes.Result) error {
 	if err := conn.writeRows(result); err != nil {
 		return err
 	}
-	return conn.writeEndResult()
+	return conn.writeEndResult(false, 0, 0, 0)
 }
 
 func RowString(row []sqltypes.Value) string {

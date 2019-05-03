@@ -18,18 +18,19 @@ package worker
 
 import (
 	"flag"
-	"fmt"
 	"html/template"
 	"net/http"
 
-	"github.com/youtube/vitess/go/vt/wrangler"
+	"vitess.io/vitess/go/vt/vterrors"
+
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/wrangler"
 )
 
 func commandPanic(wi *Instance, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) (Worker, error) {
 	worker, err := NewPanicWorker(wr)
 	if err != nil {
-		return nil, fmt.Errorf("Could not create Panic worker: %v", err)
+		return nil, vterrors.Wrap(err, "Could not create Panic worker")
 	}
 	return worker, nil
 }
@@ -37,7 +38,7 @@ func commandPanic(wi *Instance, wr *wrangler.Wrangler, subFlags *flag.FlagSet, a
 func interactivePanic(ctx context.Context, wi *Instance, wr *wrangler.Wrangler, w http.ResponseWriter, r *http.Request) (Worker, *template.Template, map[string]interface{}, error) {
 	wrk, err := NewPanicWorker(wr)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("Could not create Panic worker: %v", err)
+		return nil, nil, nil, vterrors.Wrap(err, "Could not create Panic worker")
 	}
 	return wrk, nil, nil, nil
 }

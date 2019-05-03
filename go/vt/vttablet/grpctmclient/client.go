@@ -22,23 +22,23 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 
-	"github.com/youtube/vitess/go/netutil"
-	"github.com/youtube/vitess/go/vt/grpcclient"
-	"github.com/youtube/vitess/go/vt/hook"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
-	"golang.org/x/net/context"
+	"vitess.io/vitess/go/netutil"
+	"vitess.io/vitess/go/vt/grpcclient"
+	"vitess.io/vitess/go/vt/hook"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/mysqlctl/tmutils"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
 
-	logutilpb "github.com/youtube/vitess/go/vt/proto/logutil"
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	replicationdatapb "github.com/youtube/vitess/go/vt/proto/replicationdata"
-	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
-	tabletmanagerservicepb "github.com/youtube/vitess/go/vt/proto/tabletmanagerservice"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	logutilpb "vitess.io/vitess/go/vt/proto/logutil"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	replicationdatapb "vitess.io/vitess/go/vt/proto/replicationdata"
+	tabletmanagerdatapb "vitess.io/vitess/go/vt/proto/tabletmanagerdata"
+	tabletmanagerservicepb "vitess.io/vitess/go/vt/proto/tabletmanagerservice"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 var (
@@ -344,6 +344,30 @@ func (client *Client) ApplySchema(ctx context.Context, tablet *topodatapb.Tablet
 	}, nil
 }
 
+// LockTables is part of the tmclient.TabletManagerClient interface.
+func (client *Client) LockTables(ctx context.Context, tablet *topodatapb.Tablet) error {
+	cc, c, err := client.dial(tablet)
+	if err != nil {
+		return err
+	}
+	defer cc.Close()
+
+	_, err = c.LockTables(ctx, &tabletmanagerdatapb.LockTablesRequest{})
+	return err
+}
+
+// UnlockTables is part of the tmclient.TabletManagerClient interface.
+func (client *Client) UnlockTables(ctx context.Context, tablet *topodatapb.Tablet) error {
+	cc, c, err := client.dial(tablet)
+	if err != nil {
+		return err
+	}
+	defer cc.Close()
+
+	_, err = c.UnlockTables(ctx, &tabletmanagerdatapb.UnlockTablesRequest{})
+	return err
+}
+
 // ExecuteFetchAsDba is part of the tmclient.TabletManagerClient interface.
 func (client *Client) ExecuteFetchAsDba(ctx context.Context, tablet *topodatapb.Tablet, usePool bool, query []byte, maxRows int, disableBinlogs, reloadSchema bool) (*querypb.QueryResult, error) {
 	var c tabletmanagerservicepb.TabletManagerClient
@@ -497,6 +521,20 @@ func (client *Client) StartSlave(ctx context.Context, tablet *topodatapb.Tablet)
 	return err
 }
 
+// StartSlaveUntilAfter is part of the tmclient.TabletManagerClient interface.
+func (client *Client) StartSlaveUntilAfter(ctx context.Context, tablet *topodatapb.Tablet, position string, waitTime time.Duration) error {
+	cc, c, err := client.dial(tablet)
+	if err != nil {
+		return err
+	}
+	defer cc.Close()
+	_, err = c.StartSlaveUntilAfter(ctx, &tabletmanagerdatapb.StartSlaveUntilAfterRequest{
+		Position:    position,
+		WaitTimeout: int64(waitTime),
+	})
+	return err
+}
+
 // TabletExternallyReparented is part of the tmclient.TabletManagerClient interface.
 func (client *Client) TabletExternallyReparented(ctx context.Context, tablet *topodatapb.Tablet, externalID string) error {
 	cc, c, err := client.dial(tablet)
@@ -524,60 +562,31 @@ func (client *Client) GetSlaves(ctx context.Context, tablet *topodatapb.Tablet) 
 	return response.Addrs, nil
 }
 
-// WaitBlpPosition is part of the tmclient.TabletManagerClient interface.
-func (client *Client) WaitBlpPosition(ctx context.Context, tablet *topodatapb.Tablet, blpPosition *tabletmanagerdatapb.BlpPosition, waitTime time.Duration) error {
-	cc, c, err := client.dial(tablet)
-	if err != nil {
-		return err
-	}
-	defer cc.Close()
-	_, err = c.WaitBlpPosition(ctx, &tabletmanagerdatapb.WaitBlpPositionRequest{
-		BlpPosition: blpPosition,
-		WaitTimeout: int64(waitTime),
-	})
-	return err
-}
-
-// StopBlp is part of the tmclient.TabletManagerClient interface.
-func (client *Client) StopBlp(ctx context.Context, tablet *topodatapb.Tablet) ([]*tabletmanagerdatapb.BlpPosition, error) {
+// VReplicationExec is part of the tmclient.TabletManagerClient interface.
+func (client *Client) VReplicationExec(ctx context.Context, tablet *topodatapb.Tablet, query string) (*querypb.QueryResult, error) {
 	cc, c, err := client.dial(tablet)
 	if err != nil {
 		return nil, err
 	}
 	defer cc.Close()
-	response, err := c.StopBlp(ctx, &tabletmanagerdatapb.StopBlpRequest{})
+	response, err := c.VReplicationExec(ctx, &tabletmanagerdatapb.VReplicationExecRequest{Query: query})
 	if err != nil {
 		return nil, err
 	}
-	return response.BlpPositions, nil
+	return response.Result, nil
 }
 
-// StartBlp is part of the tmclient.TabletManagerClient interface.
-func (client *Client) StartBlp(ctx context.Context, tablet *topodatapb.Tablet) error {
+// VReplicationWaitForPos is part of the tmclient.TabletManagerClient interface.
+func (client *Client) VReplicationWaitForPos(ctx context.Context, tablet *topodatapb.Tablet, id int, pos string) error {
 	cc, c, err := client.dial(tablet)
 	if err != nil {
 		return err
 	}
 	defer cc.Close()
-	_, err = c.StartBlp(ctx, &tabletmanagerdatapb.StartBlpRequest{})
-	return err
-}
-
-// RunBlpUntil is part of the tmclient.TabletManagerClient interface.
-func (client *Client) RunBlpUntil(ctx context.Context, tablet *topodatapb.Tablet, positions []*tabletmanagerdatapb.BlpPosition, waitTime time.Duration) (string, error) {
-	cc, c, err := client.dial(tablet)
-	if err != nil {
-		return "", err
+	if _, err = c.VReplicationWaitForPos(ctx, &tabletmanagerdatapb.VReplicationWaitForPosRequest{Id: int64(id), Position: pos}); err != nil {
+		return err
 	}
-	defer cc.Close()
-	response, err := c.RunBlpUntil(ctx, &tabletmanagerdatapb.RunBlpUntilRequest{
-		BlpPositions: positions,
-		WaitTimeout:  int64(waitTime),
-	})
-	if err != nil {
-		return "", err
-	}
-	return response.Position, nil
+	return nil
 }
 
 //
@@ -652,6 +661,17 @@ func (client *Client) DemoteMaster(ctx context.Context, tablet *topodatapb.Table
 		return "", err
 	}
 	return response.Position, nil
+}
+
+// UndoDemoteMaster is part of the tmclient.TabletManagerClient interface.
+func (client *Client) UndoDemoteMaster(ctx context.Context, tablet *topodatapb.Tablet) error {
+	cc, c, err := client.dial(tablet)
+	if err != nil {
+		return err
+	}
+	defer cc.Close()
+	_, err = c.UndoDemoteMaster(ctx, &tabletmanagerdatapb.UndoDemoteMasterRequest{})
+	return err
 }
 
 // PromoteSlaveWhenCaughtUp is part of the tmclient.TabletManagerClient interface.
@@ -755,7 +775,7 @@ func (e *backupStreamAdapter) Recv() (*logutilpb.Event, error) {
 }
 
 // Backup is part of the tmclient.TabletManagerClient interface.
-func (client *Client) Backup(ctx context.Context, tablet *topodatapb.Tablet, concurrency int) (logutil.EventStream, error) {
+func (client *Client) Backup(ctx context.Context, tablet *topodatapb.Tablet, concurrency int, allowMaster bool) (logutil.EventStream, error) {
 	cc, c, err := client.dial(tablet)
 	if err != nil {
 		return nil, err
@@ -763,6 +783,7 @@ func (client *Client) Backup(ctx context.Context, tablet *topodatapb.Tablet, con
 
 	stream, err := c.Backup(ctx, &tabletmanagerdatapb.BackupRequest{
 		Concurrency: int64(concurrency),
+		AllowMaster: bool(allowMaster),
 	})
 	if err != nil {
 		cc.Close()

@@ -24,14 +24,14 @@ import (
 	"os"
 	"testing"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/vt/tableacl"
-	"github.com/youtube/vitess/go/vt/tableacl/simpleacl"
-	"github.com/youtube/vitess/go/vt/vttablet/endtoend/framework"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
-	"github.com/youtube/vitess/go/vt/vttest"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/vt/tableacl"
+	"vitess.io/vitess/go/vt/tableacl/simpleacl"
+	"vitess.io/vitess/go/vt/vttablet/endtoend/framework"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/vt/vttest"
 
-	vttestpb "github.com/youtube/vitess/go/vt/proto/vttest"
+	vttestpb "vitess.io/vitess/go/vt/proto/vttest"
 )
 
 var (
@@ -79,7 +79,7 @@ func TestMain(m *testing.M) {
 
 		connParams = cluster.MySQLConnParams()
 		connAppDebugParams = cluster.MySQLAppDebugConnParams()
-		err := framework.StartServer(connParams, connAppDebugParams)
+		err := framework.StartServer(connParams, connAppDebugParams, cluster.DbName())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v", err)
 			return 1
@@ -117,7 +117,7 @@ func initTableACL() error {
 	return nil
 }
 
-var testSchema = `create table vitess_test(intval int default 0, floatval float default null, charval varchar(256) default null, binval varbinary(256) default null, primary key(intval));
+var testSchema = `create table vitess_test(intval int default 0, floatval float default null, charval varchar(10) default null, binval varbinary(256) default null, primary key(intval));
 create table vitess_test_debuguser(intval int default 0, floatval float default null, charval varchar(256) default null, binval varbinary(256) default null, primary key(intval));
 grant select, show databases, process on *.* to 'vt_appdebug'@'localhost';
 revoke select on *.* from 'vt_appdebug'@'localhost';

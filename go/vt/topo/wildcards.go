@@ -17,15 +17,16 @@ limitations under the License.
 package topo
 
 import (
-	"fmt"
 	"path"
 	"strings"
 	"sync"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	"github.com/youtube/vitess/go/fileutil"
+	"vitess.io/vitess/go/fileutil"
+	"vitess.io/vitess/go/vt/log"
 )
 
 // ResolveKeyspaceWildcard will resolve keyspace wildcards.
@@ -42,12 +43,12 @@ func (ts *Server) ResolveKeyspaceWildcard(ctx context.Context, param string) ([]
 
 	keyspaces, err := ts.GetKeyspaces(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read keyspaces from topo: %v", err)
+		return nil, vterrors.Wrapf(err, "failed to read keyspaces from topo")
 	}
 	for _, k := range keyspaces {
 		matched, err := path.Match(param, k)
 		if err != nil {
-			return nil, fmt.Errorf("invalid pattern %v: %v", param, err)
+			return nil, vterrors.Wrapf(err, "invalid pattern %v", param)
 		}
 		if matched {
 			result = append(result, k)
@@ -73,7 +74,7 @@ type KeyspaceShard struct {
 func (ts *Server) ResolveShardWildcard(ctx context.Context, param string) ([]KeyspaceShard, error) {
 	parts := strings.Split(param, "/")
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid shard path: %v", param)
+		return nil, vterrors.Errorf(vtrpc.Code_INVALID_ARGUMENT, "invalid shard path: %v", param)
 	}
 	result := make([]KeyspaceShard, 0, 1)
 
@@ -90,23 +91,23 @@ func (ts *Server) ResolveShardWildcard(ctx context.Context, param string) ([]Key
 		if fileutil.HasWildcard(shard) {
 			// get all the shards for the keyspace
 			shardNames, err := ts.GetShardNames(ctx, matchedKeyspace)
-			switch err {
-			case nil:
+			switch {
+			case err == nil:
 				// got all the shards, we can keep going
-			case ErrNoNode:
+			case IsErrType(err, NoNode):
 				// keyspace doesn't exist
 				if keyspaceHasWildcards {
 					// that's the */* case when a keyspace has no shards
 					continue
 				}
-				return nil, fmt.Errorf("keyspace %v doesn't exist", matchedKeyspace)
+				return nil, vterrors.Errorf(vtrpc.Code_INVALID_ARGUMENT, "keyspace %v doesn't exist", matchedKeyspace)
 			default:
-				return nil, fmt.Errorf("cannot read keyspace shards for %v: %v", matchedKeyspace, err)
+				return nil, vterrors.Wrapf(err, "cannot read keyspace shards for %v", matchedKeyspace)
 			}
 			for _, s := range shardNames {
 				matched, err := path.Match(shard, s)
 				if err != nil {
-					return nil, fmt.Errorf("Invalid pattern %v: %v", shard, err)
+					return nil, vterrors.Wrapf(err, "invalid pattern %v", shard)
 				}
 				if matched {
 					result = append(result, KeyspaceShard{matchedKeyspace, s})
@@ -121,15 +122,15 @@ func (ts *Server) ResolveShardWildcard(ctx context.Context, param string) ([]Key
 			if keyspaceHasWildcards {
 				// keyspace was a wildcard, shard is not, just try it
 				_, err := ts.GetShard(ctx, matchedKeyspace, shard)
-				switch err {
-				case nil:
+				switch {
+				case err == nil:
 					// shard exists, add it
 					result = append(result, KeyspaceShard{matchedKeyspace, shard})
-				case ErrNoNode:
+				case IsErrType(err, NoNode):
 					// no shard, ignore
 				default:
 					// other error
-					return nil, fmt.Errorf("Cannot read shard %v/%v: %v", matchedKeyspace, shard, err)
+					return nil, vterrors.Wrapf(err, "cannot read shard %v/%v", matchedKeyspace, shard)
 				}
 			} else {
 				// keyspace and shards are not wildcards, just add the value
@@ -205,7 +206,7 @@ func (ts *Server) resolveRecursive(ctx context.Context, cell string, parts []str
 				// /keyspaces/aaa/* and
 				// /keyspaces/aaa doesn't exist
 				// -> return empty list, no error
-				if err == ErrNoNode {
+				if IsErrType(err, NoNode) {
 					return nil, nil
 				}
 				// otherwise we return the error
@@ -282,7 +283,7 @@ func (ts *Server) resolveRecursive(ctx context.Context, cell string, parts []str
 	if err == nil {
 		// The path exists as a file, return it.
 		return []string{p}, nil
-	} else if err == ErrNoNode {
+	} else if IsErrType(err, NoNode) {
 		// The path doesn't exist, don't return anything.
 		return nil, nil
 	}

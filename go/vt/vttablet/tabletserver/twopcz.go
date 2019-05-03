@@ -22,9 +22,8 @@ import (
 	"html/template"
 	"net/http"
 
-	log "github.com/golang/glog"
-
-	"github.com/youtube/vitess/go/acl"
+	"vitess.io/vitess/go/acl"
+	"vitess.io/vitess/go/vt/log"
 )
 
 var (
@@ -147,7 +146,6 @@ func twopczHandler(txe *TxExecutor, w http.ResponseWriter, r *http.Request) {
 	var msg string
 	if action != "" {
 		if err != nil {
-			msg = err.Error()
 			msg = fmt.Sprintf("%s(%s): %v", r.FormValue("Action"), dtid, err)
 		} else {
 			msg = fmt.Sprintf("%s(%s): completed.", r.FormValue("Action"), dtid)

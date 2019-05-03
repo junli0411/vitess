@@ -181,6 +181,8 @@ Validates that all nodes reachable from the global replication graph and that al
 * [GetKeyspaces](#getkeyspaces)
 * [MigrateServedFrom](#migrateservedfrom)
 * [MigrateServedTypes](#migrateservedtypes)
+* [CancelResharding](#cancelresharding)
+* [ShowResharding](#showresharding)
 * [RebuildKeyspaceGraph](#rebuildkeyspacegraph)
 * [RemoveKeyspaceCell](#removekeyspacecell)
 * [SetKeyspaceServedFrom](#setkeyspaceservedfrom)
@@ -278,7 +280,6 @@ Outputs a JSON structure that contains information about the Keyspace.
 Outputs a sorted list of all keyspaces.
 
 
-
 ### MigrateServedFrom
 
 Makes the &lt;destination keyspace/shard&gt; serve the given type. This command also rebuilds the serving graph.
@@ -334,9 +335,10 @@ Migrates a serving type from the source shard to the shards that it replicates t
 | Name | Type | Definition |
 | :-------- | :--------- | :--------- |
 | cells | string | Specifies a comma-separated list of cells to update |
-| filtered_replication_wait_time | Duration | Specifies the maximum time to wait, in seconds, for filtered replication to catch up on master migrations |
+| filtered\_replication\_wait\_time | Duration | Specifies the maximum time to wait, in seconds, for filtered replication to catch up on master migrations |
 | reverse | Boolean | Moves the served tablet type backward instead of forward. Use in case of trouble |
 | skip-refresh-state | Boolean | Skips refreshing the state of the source tablets after the migration, meaning that the refresh will need to be done manually, replica and rdonly only) |
+| reverse\_replication | Boolean | For master migration, enabling this flag reverses replication which allows you to rollback |
 
 
 #### Arguments
@@ -363,6 +365,24 @@ Migrates a serving type from the source shard to the shards that it replicates t
 
 * the <code>&lt;source keyspace/shard&gt;</code> and <code>&lt;served tablet type&gt;</code> arguments are both required for the <code>&lt;MigrateServedTypes&gt;</code> command This error occurs if the command is not called with exactly 2 arguments.
 * the <code>&lt;skip-refresh-state&gt;</code> flag can only be specified for non-master migrations
+
+
+### CancelResharding
+
+Permanently cancels a resharding in progress. All resharding related metadata will be deleted.
+
+#### Arguments
+
+* <code>&lt;keyspace/shard&gt;</code> &ndash; Required. The name of a sharded database that contains one or more tables as well as the shard associated with the command. The keyspace must be identified by a string that does not contain whitepace, while the shard is typically identified by a string in the format <code>&lt;range start&gt;-&lt;range end&gt;</code>.
+
+
+### ShowResharding
+
+"Displays all metadata about a resharding in progress.
+
+#### Arguments
+
+* <code>&lt;keyspace/shard&gt;</code> &ndash; Required. The name of a sharded database that contains one or more tables as well as the shard associated with the command. The keyspace must be identified by a string that does not contain whitepace, while the shard is typically identified by a string in the format <code>&lt;range start&gt;-&lt;range end&gt;</code>.
 
 
 ### RebuildKeyspaceGraph
@@ -510,7 +530,7 @@ Validates that all nodes reachable from the specified keyspace are consistent.
 
 ### WaitForDrain
 
-Blocks until no new queries were observed on all tablets with the given tablet type in the specifed keyspace.  This can be used as sanity check to ensure that the tablets were drained after running vtctl MigrateServedTypes  and vtgate is no longer using them. If -timeout is set, it fails when the timeout is reached.
+Blocks until no new queries were observed on all tablets with the given tablet type in the specified keyspace.  This can be used as sanity check to ensure that the tablets were drained after running vtctl MigrateServedTypes  and vtgate is no longer using them. If -timeout is set, it fails when the timeout is reached.
 
 #### Example
 
@@ -1099,8 +1119,11 @@ Applies the VTGate routing schema to the provided keyspace. Shows the result aft
 | :-------- | :--------- | :--------- |
 | cells | string | If specified, limits the rebuild to the cells, after upload. Ignored if skipRebuild is set. |
 | skip_rebuild | Boolean | If set, do no rebuild the SrvSchema objects. |
+| dry-run | Boolean | Shows the proposed change without executing it |
 | vschema | string | Identifies the VTGate routing schema |
 | vschema_file | string | Identifies the VTGate routing schema file |
+| sql | string | Identifies a VSchema DDL SQL statement |
+| sql_file | string | Identifies a VSchema DDL SQL statement |
 
 
 #### Arguments
@@ -1477,7 +1500,7 @@ Outputs a JSON structure that contains information about the SrvVSchema.
 * [PlannedReparentShard](#plannedreparentshard)
 * [RemoveBackup](#removebackup)
 * [RemoveShardCell](#removeshardcell)
-* [SetShardServedTypes](#setshardservedtypes)
+* [SetShardIsMasterServing](#setshardismasterserving)
 * [SetShardTabletControl](#setshardtabletcontrol)
 * [ShardReplicationFix](#shardreplicationfix)
 * [ShardReplicationPositions](#shardreplicationpositions)
@@ -1703,9 +1726,9 @@ Removes the cell from the shard's Cells list.
 * the <code>&lt;keyspace/shard&gt;</code> and <code>&lt;cell&gt;</code> arguments are required for the <code>&lt;RemoveShardCell&gt;</code> command This error occurs if the command is not called with exactly 2 arguments.
 
 
-### SetShardServedTypes
+### SetShardIsMasterServing
 
-Add or remove served type to/from a shard. This is meant as an emergency function. It does not rebuild any serving graph i.e. does not run 'RebuildKeyspaceGraph'.
+Add or remove a shard from serving. This is meant as an emergency function. It does not rebuild any serving graph i.e. does not run 'RebuildKeyspaceGraph'.
 
 #### Example
 
@@ -1869,7 +1892,7 @@ Deletes the SourceShard record with the provided index. This is meant as an emer
 
 ### TabletExternallyReparented
 
-Changes metadata in the topology server to acknowledge a shard master change performed by an external tool. See the Reparenting guide for more information:https://github.com/youtube/vitess/blob/master/doc/Reparenting.md#external-reparents.
+Changes metadata in the topology server to acknowledge a shard master change performed by an external tool. See the Reparenting guide for more information:https://github.com/vitessio/vitess/blob/master/doc/Reparenting.md#external-reparents.
 
 #### Example
 
@@ -2320,7 +2343,7 @@ Blocks the action queue on the specified tablet for the specified amount of time
 #### Arguments
 
 * <code>&lt;tablet alias&gt;</code> &ndash; Required. A Tablet Alias uniquely identifies a vttablet. The argument value is in the format <code>&lt;cell name&gt;-&lt;uid&gt;</code>.
-* <code>&lt;duration&gt;</code> &ndash; Required. The amount of time that the action queue should be blocked. The value is a string that contains a possibly signed sequence of decimal numbers, each with optional fraction and a unit suffix, such as "300ms" or "1h45m". See the definition of the Go language's <a href="http://golang.org/pkg/time/#ParseDuration">ParseDuration</a> function for more details. Note that, in practice, the value should be a positively signed value.
+* <code>&lt;duration&gt;</code> &ndash; Required. The amount of time that the action queue should be blocked. The value is a string that contains a possibly signed sequence of decimal numbers, each with optional fraction and a unit suffix, such as "300ms" or "1h45m". See the definition of the Go language's <a href="https://golang.org/pkg/time/#ParseDuration">ParseDuration</a> function for more details. Note that, in practice, the value should be a positively signed value.
 
 #### Errors
 

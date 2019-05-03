@@ -28,25 +28,25 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/callerid"
-	"github.com/youtube/vitess/go/vt/callinfo"
-	"github.com/youtube/vitess/go/vt/callinfo/fakecallinfo"
-	"github.com/youtube/vitess/go/vt/tableacl"
-	"github.com/youtube/vitess/go/vt/tableacl/simpleacl"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/connpool"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/messager"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/planbuilder"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/rules"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/callerid"
+	"vitess.io/vitess/go/vt/callinfo"
+	"vitess.io/vitess/go/vt/callinfo/fakecallinfo"
+	"vitess.io/vitess/go/vt/tableacl"
+	"vitess.io/vitess/go/vt/tableacl/simpleacl"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/connpool"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/messager"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/planbuilder"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/rules"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	tableaclpb "github.com/youtube/vitess/go/vt/proto/tableacl"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	tableaclpb "vitess.io/vitess/go/vt/proto/tableacl"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 func TestQueryExecutorPlanDDL(t *testing.T) {
@@ -146,6 +146,10 @@ func TestQueryExecutorPassthroughDml(t *testing.T) {
 
 	tsv.SetAllowUnsafeDMLs(true)
 	got, err = qre.Execute()
+
+	if err != nil {
+		t.Fatalf("qre.Execute() = %v, want nil", err)
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got: %v, want: %v", got, want)
 	}
@@ -612,7 +616,6 @@ func TestQueryExecutorPlanUpsertPk(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), wantErr) {
 		t.Errorf("qre.Execute() = %v, want %v", err, wantErr)
 	}
-	wantqueries = []string{}
 	if gotqueries = fetchRecordedQueries(qre); gotqueries != nil {
 		t.Errorf("queries: %v, want nil", gotqueries)
 	}
@@ -1242,6 +1245,31 @@ func TestQueryExecutorPlanPassSelect(t *testing.T) {
 	}
 }
 
+func TestQueryExecutorPlanSelectImpossible(t *testing.T) {
+	db := setUpQueryExecutorTest(t)
+	defer db.Close()
+	query := "select * from test_table where 1 != 1"
+	want := &sqltypes.Result{
+		Fields: getTestTableFields(),
+	}
+	db.AddQuery(query, want)
+	db.AddQuery("select * from test_table where 1 != 1", &sqltypes.Result{
+		Fields: getTestTableFields(),
+	})
+	ctx := context.Background()
+	tsv := newTestTabletServer(ctx, noFlags, db)
+	qre := newTestQueryExecutor(ctx, tsv, query, 0)
+	defer tsv.StopService()
+	checkPlanID(t, planbuilder.PlanSelectImpossible, qre.plan.PlanID)
+	got, err := qre.Execute()
+	if err != nil {
+		t.Fatalf("qre.Execute() = %v, want nil", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got: %v, want: %v", got, want)
+	}
+}
+
 func TestQueryExecutorPlanPassSelectSqlSelectLimit(t *testing.T) {
 	db := setUpQueryExecutorTest(t)
 	defer db.Close()
@@ -1706,6 +1734,53 @@ func TestQueryExecutorTableAclNoPermission(t *testing.T) {
 	}
 }
 
+func TestQueryExecutorTableAclDualTableExempt(t *testing.T) {
+	aclName := fmt.Sprintf("simpleacl-test-%d", rand.Int63())
+	tableacl.Register(aclName, &simpleacl.Factory{})
+	tableacl.SetDefaultACL(aclName)
+	db := setUpQueryExecutorTest(t)
+	defer db.Close()
+
+	username := "Sleve McDichael"
+	callerID := &querypb.VTGateCallerID{
+		Username: username,
+	}
+	ctx := callerid.NewContext(context.Background(), nil, callerID)
+
+	config := &tableaclpb.Config{
+		TableGroups: []*tableaclpb.TableGroupSpec{},
+	}
+
+	if err := tableacl.InitFromProto(config); err != nil {
+		t.Fatalf("unable to load tableacl config, error: %v", err)
+	}
+
+	// enable Config.StrictTableAcl
+	tsv := newTestTabletServer(ctx, enableStrictTableACL, db)
+	query := "select * from test_table where 1 != 1"
+	qre := newTestQueryExecutor(ctx, tsv, query, 0)
+	defer tsv.StopService()
+	checkPlanID(t, planbuilder.PlanSelectImpossible, qre.plan.PlanID)
+	// query should fail because nobody has read access to test_table
+	_, err := qre.Execute()
+	if code := vterrors.Code(err); code != vtrpcpb.Code_PERMISSION_DENIED {
+		t.Fatalf("qre.Execute: %v, want %v", code, vtrpcpb.Code_PERMISSION_DENIED)
+	}
+	wanterr := "table acl error"
+	if !strings.Contains(err.Error(), wanterr) {
+		t.Fatalf("qre.Execute: %v, want %s", err, wanterr)
+	}
+
+	// table acl should be ignored when querying against dual table
+	query = "select @@version_comment from dual limit 1"
+	ctx = callerid.NewContext(context.Background(), nil, callerID)
+	qre = newTestQueryExecutor(ctx, tsv, query, 0)
+	_, err = qre.Execute()
+	if err != nil {
+		t.Fatalf("qre.Execute: %v, want: nil", err)
+	}
+}
+
 func TestQueryExecutorTableAclExemptACL(t *testing.T) {
 	aclName := fmt.Sprintf("simpleacl-test-%d", rand.Int63())
 	tableacl.Register(aclName, &simpleacl.Factory{})
@@ -1758,7 +1833,7 @@ func TestQueryExecutorTableAclExemptACL(t *testing.T) {
 
 	// table acl should be ignored since this is an exempt user.
 	username = "exempt-acl"
-	f, _ := tableacl.GetCurrentAclFactory()
+	f, _ := tableacl.GetCurrentACLFactory()
 	if tsv.qe.exemptACL, err = f.New([]string{username}); err != nil {
 		t.Fatalf("Cannot load exempt ACL for Table ACL: %v", err)
 	}
@@ -1821,13 +1896,13 @@ func TestQueryExecutorTableAclDryRun(t *testing.T) {
 	qre := newTestQueryExecutor(ctx, tsv, query, 0)
 	defer tsv.StopService()
 	checkPlanID(t, planbuilder.PlanPassSelect, qre.plan.PlanID)
-	beforeCount := tabletenv.TableaclPseudoDenied.Counters.Counts()[tableACLStatsKey]
+	beforeCount := tabletenv.TableaclPseudoDenied.Counts()[tableACLStatsKey]
 	// query should fail because current user do not have read permissions
 	_, err := qre.Execute()
 	if err != nil {
 		t.Fatalf("qre.Execute() = %v, want: nil", err)
 	}
-	afterCount := tabletenv.TableaclPseudoDenied.Counters.Counts()[tableACLStatsKey]
+	afterCount := tabletenv.TableaclPseudoDenied.Counts()[tableACLStatsKey]
 	if afterCount-beforeCount != 1 {
 		t.Fatalf("table acl pseudo denied count should increase by one. got: %d, want: %d", afterCount, beforeCount+1)
 	}
@@ -1989,7 +2064,7 @@ func newTestTabletServer(ctx context.Context, flags executorFlags, db *fakesqldb
 func newTransaction(tsv *TabletServer, options *querypb.ExecuteOptions) int64 {
 	transactionID, err := tsv.Begin(context.Background(), &tsv.target, options)
 	if err != nil {
-		panic(fmt.Errorf("failed to start a transaction: %v", err))
+		panic(vterrors.Wrap(err, "failed to start a transaction"))
 	}
 	return transactionID
 }
@@ -2110,6 +2185,20 @@ func getQueryExecutorSupportedQueries(testTableHasMultipleUniqueKeys bool) map[s
 			RowsAffected: 1,
 			Rows: [][]sqltypes.Value{
 				{sqltypes.NewVarBinary("0")},
+			},
+		},
+		"select @@version_comment from dual where 1 != 1": {
+			Fields: []*querypb.Field{{
+				Type: sqltypes.VarChar,
+			}},
+		},
+		"select @@version_comment from dual limit 1": {
+			Fields: []*querypb.Field{{
+				Type: sqltypes.VarChar,
+			}},
+			RowsAffected: 1,
+			Rows: [][]sqltypes.Value{
+				{sqltypes.NewVarBinary("fakedb server")},
 			},
 		},
 		"show variables like 'binlog_format'": {

@@ -23,9 +23,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 )
 
 var errRejected = errors.New("rejected")
@@ -49,12 +49,8 @@ func (util *testUtils) checkEqual(t *testing.T, expected interface{}, result int
 	}
 }
 
-func (util *testUtils) newDBConfigs(db *fakesqldb.DB) dbconfigs.DBConfigs {
-	return dbconfigs.DBConfigs{
-		App:           *db.ConnParams(),
-		Dba:           *db.ConnParams(),
-		SidecarDBName: "_vt",
-	}
+func (util *testUtils) newDBConfigs(db *fakesqldb.DB) *dbconfigs.DBConfigs {
+	return dbconfigs.NewTestDBConfigs(*db.ConnParams(), *db.ConnParams(), "")
 }
 
 func (util *testUtils) newQueryServiceConfig() tabletenv.TabletConfig {

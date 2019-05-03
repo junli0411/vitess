@@ -22,13 +22,14 @@ import (
 	"os"
 	"time"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/exit"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/vtctl/vtctlclient"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/exit"
+	"vitess.io/vitess/go/trace"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/vtctl/vtctlclient"
 
-	logutilpb "github.com/youtube/vitess/go/vt/proto/logutil"
+	logutilpb "vitess.io/vitess/go/vt/proto/logutil"
 )
 
 // The default values used by these flags cannot be taken from wrangler and
@@ -43,17 +44,22 @@ func main() {
 
 	flag.Parse()
 
+	closer := trace.StartTracing("vtctlclient")
+	defer trace.LogErrorsWhenClosing(closer)
+
 	logger := logutil.NewConsoleLogger()
 
 	// We can't do much without a -server flag
 	if *server == "" {
-		log.Error(errors.New("Please specify -server <vtctld_host:vtctld_port> to specify the vtctld server to connect to"))
+		log.Error(errors.New("please specify -server <vtctld_host:vtctld_port> to specify the vtctld server to connect to"))
 		os.Exit(1)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), *actionTimeout)
+	defer cancel()
+
 	err := vtctlclient.RunCommandAndWait(
-		context.Background(), *server, flag.Args(),
-		*actionTimeout,
+		ctx, *server, flag.Args(),
 		func(e *logutilpb.Event) {
 			logutil.LogEvent(logger, e)
 		})

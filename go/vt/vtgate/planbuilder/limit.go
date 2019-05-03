@@ -17,11 +17,10 @@ limitations under the License.
 package planbuilder
 
 import (
-	"errors"
 	"fmt"
 
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vtgate/engine"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vtgate/engine"
 )
 
 // limit is the builder for engine.Limit.
@@ -30,8 +29,7 @@ import (
 // operation. Since a limit is the final operation
 // of a SELECT, most pushes are not applicable.
 type limit struct {
-	symtab        *symtab
-	maxOrder      int
+	order         int
 	resultColumns []*resultColumn
 	input         builder
 	elimit        *engine.Limit
@@ -40,27 +38,22 @@ type limit struct {
 // newLimit builds a new limit.
 func newLimit(bldr builder) *limit {
 	return &limit{
-		symtab:        bldr.Symtab(),
-		maxOrder:      bldr.MaxOrder(),
+		order:         bldr.Order() + 1,
 		resultColumns: bldr.ResultColumns(),
 		input:         bldr,
 		elimit:        &engine.Limit{},
 	}
 }
 
-// Symtab satisfies the builder interface.
-func (l *limit) Symtab() *symtab {
-	return l.symtab
+// Order satisfies the builder interface.
+func (l *limit) Order() int {
+	return l.order
 }
 
-// MaxOrder satisfies the builder interface.
-func (l *limit) MaxOrder() int {
-	return l.maxOrder
-}
-
-// SetOrder satisfies the builder interface.
-func (l *limit) SetOrder(order int) {
-	panic("BUG: reordering can only happen within the FROM clause")
+// Reorder satisfies the builder interface.
+func (l *limit) Reorder(order int) {
+	l.input.Reorder(order)
+	l.order = l.input.Order() + 1
 }
 
 // Primitive satisfies the builder interface.
@@ -69,9 +62,9 @@ func (l *limit) Primitive() engine.Primitive {
 	return l.elimit
 }
 
-// Leftmost satisfies the builder interface.
-func (l *limit) Leftmost() columnOriginator {
-	return l.input.Leftmost()
+// First satisfies the builder interface.
+func (l *limit) First() builder {
+	return l.input.First()
 }
 
 // ResultColumns satisfies the builder interface.
@@ -80,12 +73,12 @@ func (l *limit) ResultColumns() []*resultColumn {
 }
 
 // PushFilter satisfies the builder interface.
-func (l *limit) PushFilter(_ sqlparser.Expr, whereType string, _ columnOriginator) error {
+func (l *limit) PushFilter(_ *primitiveBuilder, _ sqlparser.Expr, whereType string, _ builder) error {
 	panic("BUG: unreachable")
 }
 
 // PushSelect satisfies the builder interface.
-func (l *limit) PushSelect(expr *sqlparser.AliasedExpr, origin columnOriginator) (rc *resultColumn, colnum int, err error) {
+func (l *limit) PushSelect(expr *sqlparser.AliasedExpr, origin builder) (rc *resultColumn, colnum int, err error) {
 	panic("BUG: unreachable")
 }
 
@@ -114,9 +107,6 @@ func (l *limit) PushOrderByRand() {
 // the underlying primitive that it doesn't need to return more rows than
 // specified.
 func (l *limit) SetLimit(limit *sqlparser.Limit) error {
-	if limit.Offset != nil {
-		return errors.New("unsupported: offset limit for cross-shard queries")
-	}
 	count, ok := limit.Rowcount.(*sqlparser.SQLVal)
 	if !ok {
 		return fmt.Errorf("unexpected expression in LIMIT: %v", sqlparser.String(limit))
@@ -126,7 +116,21 @@ func (l *limit) SetLimit(limit *sqlparser.Limit) error {
 		return err
 	}
 	l.elimit.Count = pv
-	l.input.SetUpperLimit(count)
+
+	switch offset := limit.Offset.(type) {
+	case *sqlparser.SQLVal:
+		pv, err = sqlparser.NewPlanValue(offset)
+		if err != nil {
+			return err
+		}
+		l.elimit.Offset = pv
+	case nil:
+		// NOOP
+	default:
+		return fmt.Errorf("unexpected expression in LIMIT: %v", sqlparser.String(limit))
+	}
+
+	l.input.SetUpperLimit(sqlparser.NewValArg([]byte(":__upper_limit")))
 	return nil
 }
 

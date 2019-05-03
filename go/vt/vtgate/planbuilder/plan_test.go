@@ -23,26 +23,30 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"strings"
 	"testing"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/testfiles"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vtgate/engine"
-	"github.com/youtube/vitess/go/vt/vtgate/vindexes"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/key"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vtgate/engine"
+	"vitess.io/vitess/go/vt/vtgate/vindexes"
+
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
-// hashIndex satisfies Functional, Unique.
+// hashIndex is a functional, unique Vindex.
 type hashIndex struct{ name string }
 
-func (v *hashIndex) String() string { return v.name }
-func (*hashIndex) Cost() int        { return 1 }
+func (v *hashIndex) String() string   { return v.name }
+func (*hashIndex) Cost() int          { return 1 }
+func (*hashIndex) IsUnique() bool     { return true }
+func (*hashIndex) IsFunctional() bool { return true }
 func (*hashIndex) Verify(vindexes.VCursor, []sqltypes.Value, [][]byte) ([]bool, error) {
 	return []bool{}, nil
 }
-func (*hashIndex) Map(vindexes.VCursor, []sqltypes.Value) ([]vindexes.KsidOrRange, error) {
+func (*hashIndex) Map(cursor vindexes.VCursor, ids []sqltypes.Value) ([]key.Destination, error) {
 	return nil, nil
 }
 
@@ -50,17 +54,17 @@ func newHashIndex(name string, _ map[string]string) (vindexes.Vindex, error) {
 	return &hashIndex{name: name}, nil
 }
 
-var _ vindexes.Unique = (*hashIndex)(nil)
-
-// lookupIndex satisfies Lookup, Unique.
+// lookupIndex is a unique Vindex, and satisfies Lookup.
 type lookupIndex struct{ name string }
 
-func (v *lookupIndex) String() string { return v.name }
-func (*lookupIndex) Cost() int        { return 2 }
+func (v *lookupIndex) String() string   { return v.name }
+func (*lookupIndex) Cost() int          { return 2 }
+func (*lookupIndex) IsUnique() bool     { return true }
+func (*lookupIndex) IsFunctional() bool { return false }
 func (*lookupIndex) Verify(vindexes.VCursor, []sqltypes.Value, [][]byte) ([]bool, error) {
 	return []bool{}, nil
 }
-func (*lookupIndex) Map(vindexes.VCursor, []sqltypes.Value) ([]vindexes.KsidOrRange, error) {
+func (*lookupIndex) Map(cursor vindexes.VCursor, ids []sqltypes.Value) ([]key.Destination, error) {
 	return nil, nil
 }
 func (*lookupIndex) Create(vindexes.VCursor, [][]sqltypes.Value, [][]byte, bool) error { return nil }
@@ -73,18 +77,21 @@ func newLookupIndex(name string, _ map[string]string) (vindexes.Vindex, error) {
 	return &lookupIndex{name: name}, nil
 }
 
-var _ vindexes.Unique = (*lookupIndex)(nil)
 var _ vindexes.Lookup = (*lookupIndex)(nil)
 
 // multiIndex satisfies Lookup, NonUnique.
 type multiIndex struct{ name string }
 
-func (v *multiIndex) String() string { return v.name }
-func (*multiIndex) Cost() int        { return 3 }
+func (v *multiIndex) String() string   { return v.name }
+func (*multiIndex) Cost() int          { return 3 }
+func (*multiIndex) IsUnique() bool     { return false }
+func (*multiIndex) IsFunctional() bool { return false }
 func (*multiIndex) Verify(vindexes.VCursor, []sqltypes.Value, [][]byte) ([]bool, error) {
 	return []bool{}, nil
 }
-func (*multiIndex) Map(vindexes.VCursor, []sqltypes.Value) ([]vindexes.Ksids, error)  { return nil, nil }
+func (*multiIndex) Map(cursor vindexes.VCursor, ids []sqltypes.Value) ([]key.Destination, error) {
+	return nil, nil
+}
 func (*multiIndex) Create(vindexes.VCursor, [][]sqltypes.Value, [][]byte, bool) error { return nil }
 func (*multiIndex) Delete(vindexes.VCursor, [][]sqltypes.Value, []byte) error         { return nil }
 func (*multiIndex) Update(vindexes.VCursor, []sqltypes.Value, []byte, []sqltypes.Value) error {
@@ -95,18 +102,22 @@ func newMultiIndex(name string, _ map[string]string) (vindexes.Vindex, error) {
 	return &multiIndex{name: name}, nil
 }
 
-var _ vindexes.NonUnique = (*multiIndex)(nil)
+var _ vindexes.Vindex = (*multiIndex)(nil)
 var _ vindexes.Lookup = (*multiIndex)(nil)
 
 // costlyIndex satisfies Lookup, NonUnique.
 type costlyIndex struct{ name string }
 
-func (v *costlyIndex) String() string { return v.name }
-func (*costlyIndex) Cost() int        { return 10 }
+func (v *costlyIndex) String() string   { return v.name }
+func (*costlyIndex) Cost() int          { return 10 }
+func (*costlyIndex) IsUnique() bool     { return false }
+func (*costlyIndex) IsFunctional() bool { return false }
 func (*costlyIndex) Verify(vindexes.VCursor, []sqltypes.Value, [][]byte) ([]bool, error) {
 	return []bool{}, nil
 }
-func (*costlyIndex) Map(vindexes.VCursor, []sqltypes.Value) ([]vindexes.Ksids, error)  { return nil, nil }
+func (*costlyIndex) Map(cursor vindexes.VCursor, ids []sqltypes.Value) ([]key.Destination, error) {
+	return nil, nil
+}
 func (*costlyIndex) Create(vindexes.VCursor, [][]sqltypes.Value, [][]byte, bool) error { return nil }
 func (*costlyIndex) Delete(vindexes.VCursor, [][]sqltypes.Value, []byte) error         { return nil }
 func (*costlyIndex) Update(vindexes.VCursor, []sqltypes.Value, []byte, []sqltypes.Value) error {
@@ -117,7 +128,7 @@ func newCostlyIndex(name string, _ map[string]string) (vindexes.Vindex, error) {
 	return &costlyIndex{name: name}, nil
 }
 
-var _ vindexes.NonUnique = (*costlyIndex)(nil)
+var _ vindexes.Vindex = (*costlyIndex)(nil)
 var _ vindexes.Lookup = (*costlyIndex)(nil)
 
 func init() {
@@ -162,6 +173,11 @@ func loadSchema(t *testing.T, filename string) *vindexes.VSchema {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, ks := range vschema.Keyspaces {
+		if ks.Error != nil {
+			t.Fatal(ks.Error)
+		}
+	}
 	return vschema
 }
 
@@ -169,16 +185,36 @@ type vschemaWrapper struct {
 	v *vindexes.VSchema
 }
 
-func (vw *vschemaWrapper) FindTable(tab sqlparser.TableName) (*vindexes.Table, error) {
-	return vw.v.FindTable(tab.Qualifier.String(), tab.Name.String())
+func (vw *vschemaWrapper) FindTable(tab sqlparser.TableName) (*vindexes.Table, string, topodatapb.TabletType, key.Destination, error) {
+	destKeyspace, destTabletType, destTarget, err := topoproto.ParseDestination(tab.Qualifier.String(), topodatapb.TabletType_MASTER)
+	if err != nil {
+		return nil, destKeyspace, destTabletType, destTarget, err
+	}
+	table, err := vw.v.FindTable(destKeyspace, tab.Name.String())
+	if err != nil {
+		return nil, destKeyspace, destTabletType, destTarget, err
+	}
+	return table, destKeyspace, destTabletType, destTarget, nil
 }
 
-func (vw *vschemaWrapper) FindTableOrVindex(tab sqlparser.TableName) (*vindexes.Table, vindexes.Vindex, error) {
-	return vw.v.FindTableOrVindex(tab.Qualifier.String(), tab.Name.String())
+func (vw *vschemaWrapper) FindTablesOrVindex(tab sqlparser.TableName) ([]*vindexes.Table, vindexes.Vindex, string, topodatapb.TabletType, key.Destination, error) {
+	destKeyspace, destTabletType, destTarget, err := topoproto.ParseDestination(tab.Qualifier.String(), topodatapb.TabletType_MASTER)
+	if err != nil {
+		return nil, nil, destKeyspace, destTabletType, destTarget, err
+	}
+	tables, vindex, err := vw.v.FindTablesOrVindex(destKeyspace, tab.Name.String(), topodatapb.TabletType_MASTER)
+	if err != nil {
+		return nil, nil, destKeyspace, destTabletType, destTarget, err
+	}
+	return tables, vindex, destKeyspace, destTabletType, destTarget, nil
 }
 
 func (vw *vschemaWrapper) DefaultKeyspace() (*vindexes.Keyspace, error) {
 	return vw.v.Keyspaces["main"].Keyspace, nil
+}
+
+func (vw *vschemaWrapper) TargetString() string {
+	return "targetString"
 }
 
 // For the purposes of this set of tests, just compare the actual plan
@@ -190,30 +226,32 @@ type testPlan struct {
 
 func testFile(t *testing.T, filename string, vschema *vindexes.VSchema) {
 	for tcase := range iterateExecFile(filename) {
-		plan, err := Build(tcase.input, &vschemaWrapper{
-			v: vschema,
-		})
-		var out string
-		if err != nil {
-			out = err.Error()
-		} else {
-			bout, _ := json.Marshal(testPlan{
-				Original:     plan.Original,
-				Instructions: plan.Instructions,
+		t.Run(tcase.comments, func(t *testing.T) {
+			plan, err := Build(tcase.input, &vschemaWrapper{
+				v: vschema,
 			})
-			out = string(bout)
-		}
-		if out != tcase.output {
-			t.Errorf("File: %s, Line:%v\n%s, want\n%s", filename, tcase.lineno, out, tcase.output)
-			// Uncomment these lines to re-generate input files
+			var out string
 			if err != nil {
-				out = fmt.Sprintf("\"%s\"", out)
+				out = err.Error()
 			} else {
-				bout, _ := json.MarshalIndent(plan, "", "  ")
+				bout, _ := json.Marshal(testPlan{
+					Original:     plan.Original,
+					Instructions: plan.Instructions,
+				})
 				out = string(bout)
 			}
-			fmt.Printf("%s\"%s\"\n%s\n\n", tcase.comments, tcase.input, out)
-		}
+			if out != tcase.output {
+				t.Errorf("File: %s, Line:%v\n got:\n%s, \nwant:\n%s", filename, tcase.lineno, out, tcase.output)
+				// Uncomment these lines to re-generate input files
+				if err != nil {
+					out = fmt.Sprintf("\"%s\"", out)
+				} else {
+					bout, _ := json.MarshalIndent(plan, "", "  ")
+					out = string(bout)
+				}
+				fmt.Printf("%s\"%s\"\n%s\n\n", tcase.comments, tcase.input, out)
+			}
+		})
 	}
 }
 
@@ -301,8 +339,5 @@ func iterateExecFile(name string) (testCaseIterator chan testCase) {
 }
 
 func locateFile(name string) string {
-	if path.IsAbs(name) {
-		return name
-	}
-	return testfiles.Locate("vtgate/" + name)
+	return "testdata/" + name
 }

@@ -19,8 +19,10 @@ limitations under the License.
 syntax = "proto3";
 
 package queryservice;
+option go_package = "vitess.io/vitess/go/vt/proto/queryservice";
 
 import "query.proto";
+import "binlogdata.proto";
 
 // Query defines the tablet query service, implemented by vttablet.
 service Query {
@@ -93,4 +95,10 @@ service Query {
 
   // UpdateStream asks the server to return a stream of the updates that have been applied to its database.
   rpc UpdateStream(query.UpdateStreamRequest) returns (stream query.UpdateStreamResponse) {};
+
+  // VStream streams vreplication events.
+  rpc VStream(binlogdata.VStreamRequest) returns (stream binlogdata.VStreamResponse) {};
+
+  // VStreamRows streams rows from the specified starting point.
+  rpc VStreamRows(binlogdata.VStreamRowsRequest) returns (stream binlogdata.VStreamRowsResponse) {};
 }

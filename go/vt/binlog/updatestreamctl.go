@@ -20,18 +20,18 @@ import (
 	"fmt"
 	"sync"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/sync2"
-	"github.com/youtube/vitess/go/tb"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/sync2"
+	"vitess.io/vitess/go/tb"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
 
-	binlogdatapb "github.com/youtube/vitess/go/vt/proto/binlogdata"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 /* API and config for UpdateStream Service */
@@ -47,12 +47,12 @@ var usStateNames = map[int64]string{
 }
 
 var (
-	streamCount          = stats.NewCounters("UpdateStreamStreamCount")
-	updateStreamErrors   = stats.NewCounters("UpdateStreamErrors")
-	keyrangeStatements   = stats.NewInt("UpdateStreamKeyRangeStatements")
-	keyrangeTransactions = stats.NewInt("UpdateStreamKeyRangeTransactions")
-	tablesStatements     = stats.NewInt("UpdateStreamTablesStatements")
-	tablesTransactions   = stats.NewInt("UpdateStreamTablesTransactions")
+	streamCount          = stats.NewCountersWithSingleLabel("UpdateStreamStreamCount", "update stream count", "type")
+	updateStreamErrors   = stats.NewCountersWithSingleLabel("UpdateStreamErrors", "update stream error count", "type")
+	keyrangeStatements   = stats.NewCounter("UpdateStreamKeyRangeStatements", "update stream key range statement count")
+	keyrangeTransactions = stats.NewCounter("UpdateStreamKeyRangeTransactions", "update stream key range transaction count")
+	tablesStatements     = stats.NewCounter("UpdateStreamTablesStatements", "update stream table statement count")
+	tablesTransactions   = stats.NewCounter("UpdateStreamTablesTransactions", "update stream table transaction count")
 )
 
 // UpdateStreamControl is the interface an UpdateStream service implements

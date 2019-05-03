@@ -111,7 +111,7 @@ if [[ -z "$cmd" ]]; then
 fi
 
 if [[ ! -f bootstrap.sh ]]; then
-  echo "This script should be run from the root of the Vitess source tree - e.g. ~/src/github.com/youtube/vitess"
+  echo "This script should be run from the root of the Vitess source tree - e.g. ~/src/vitess.io/vitess"
   exit 1
 fi
 
@@ -124,6 +124,11 @@ fi
 # Mirror permissions to "other" from the owning group (for which we assume it has at least rX permissions).
 chmod -R o=g .
 
+# This is required by the vtctld_web_test.py test.
+# Otherwise, /usr/bin/chromium will crash with the error:
+# "Failed to move to new namespace: PID namespaces supported, Network namespace supported, but failed: errno = Operation not permitted"
+args="$args --cap-add=SYS_ADMIN"
+
 args="$args -v /dev/log:/dev/log"
 args="$args -v $PWD:/tmp/src"
 
@@ -131,6 +136,9 @@ args="$args -v $PWD:/tmp/src"
 mkdir -p /tmp/mavencache
 chmod 777 /tmp/mavencache
 args="$args -v /tmp/mavencache:/home/vitess/.m2"
+
+# Add in the vitess user
+args="$args --user vitess"
 
 # Mount in host VTDATAROOT if one exists, since it might be a RAM disk or SSD.
 if [[ -n "$VTDATAROOT" ]]; then
@@ -154,7 +162,6 @@ esac
 
 # Construct "cp" command to copy the source code.
 #
-# TODO(mberlin): Copy vendor/vendor.json file such that we can run a diff against the file on the image.
 # Copy the full source tree except:
 # - vendor
 # That's because these directories are already part of the image.
@@ -164,10 +171,18 @@ esac
 # we do not move or overwrite the existing files while copying the other
 # directories. Therefore, the existing files do not count as changed and will
 # not be part of the new Docker layer of the cache image.
-copy_src_cmd="cp -R /tmp/src/!(vendor) ."
+copy_src_cmd="cp -R /tmp/src/!(vendor|bootstrap.sh) ."
 # Copy the .git directory because travis/check_make_proto.sh needs a working
 # Git repository.
 copy_src_cmd=$(append_cmd "$copy_src_cmd" "cp -R /tmp/src/.git .")
+
+# Copy vendor/vendor.json file if it changed
+run_bootstrap_cmd="if [[ \$(diff -w vendor/vendor.json /tmp/src/vendor/vendor.json) ]]; then cp -f /tmp/src/vendor/vendor.json vendor/; sync_vendor=1; fi"
+# Copy bootstrap.sh if it changed
+run_bootstrap_cmd=$(append_cmd "$run_bootstrap_cmd" "if [[ \$(diff -w bootstrap.sh /tmp/src/bootstrap.sh) ]]; then cp -f /tmp/src/bootstrap.sh .; bootstrap=1; fi")
+# run bootstrap.sh if necessary
+run_bootstrap_cmd=$(append_cmd "$run_bootstrap_cmd" "if [[ -n \$bootstrap ]]; then ./bootstrap.sh; else if [[ -n \$sync_vendor ]]; then govendor sync; fi; fi")
+copy_src_cmd=$(append_cmd "$copy_src_cmd" "$run_bootstrap_cmd")
 
 # Construct the command we will actually run.
 #
@@ -196,9 +211,9 @@ fi
 # Clean up host dir mounted VTDATAROOT
 if [[ -n "$hostdir" ]]; then
   # Use Docker user to clean up first, to avoid permission errors.
-  docker run --name=rm_$testid -v $hostdir:/vt/vtdataroot $image bash -c 'rm -rf /vt/vtdataroot/*'
+  #docker run --name=rm_$testid -v $hostdir:/vt/vtdataroot $image bash -c 'rm -rf /vt/vtdataroot/*'
   docker rm -f rm_$testid &>/dev/null
-  rm -rf $hostdir
+  #rm -rf $hostdir
 fi
 
 # If requested, create the cache image.

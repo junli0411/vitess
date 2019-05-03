@@ -28,21 +28,21 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/mysql/fakesqldb"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
-	"github.com/youtube/vitess/go/vt/vttablet/grpcqueryservice"
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice/fakes"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
-	"github.com/youtube/vitess/go/vt/wrangler/testlib"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/mysql/fakesqldb"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/mysqlctl/tmutils"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/vttablet/grpcqueryservice"
+	"vitess.io/vitess/go/vt/vttablet/queryservice/fakes"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
+	"vitess.io/vitess/go/vt/wrangler/testlib"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vschemapb "github.com/youtube/vitess/go/vt/proto/vschema"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	tabletmanagerdatapb "vitess.io/vitess/go/vt/proto/tabletmanagerdata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vschemapb "vitess.io/vitess/go/vt/proto/vschema"
 )
 
 const (
@@ -171,7 +171,7 @@ func (tc *legacySplitCloneTestCase) setUp(v3 bool) {
 			},
 		}
 		sourceRdonly.FakeMysqlDaemon.CurrentMasterPosition = mysql.Position{
-			GTIDSet: mysql.MariadbGTID{Domain: 12, Server: 34, Sequence: 5678},
+			GTIDSet: mysql.MariadbGTIDSet{mysql.MariadbGTID{Domain: 12, Server: 34, Sequence: 5678}},
 		}
 		sourceRdonly.FakeMysqlDaemon.ExpectedExecuteSuperQueryList = []string{
 			"STOP SLAVE",
@@ -180,7 +180,7 @@ func (tc *legacySplitCloneTestCase) setUp(v3 bool) {
 		qs := fakes.NewStreamHealthQueryService(sourceRdonly.Target())
 		qs.AddDefaultHealthResponse()
 		grpcqueryservice.Register(sourceRdonly.RPCServer, &legacyTestQueryService{
-			t: tc.t,
+			t:                        tc.t,
 			StreamHealthQueryService: qs,
 		})
 	}
@@ -197,8 +197,6 @@ func (tc *legacySplitCloneTestCase) setUp(v3 bool) {
 		// leftReplica is unused by default.
 		tc.rightMasterFakeDb.AddExpectedQuery("INSERT INTO `vt_ks`.`table1` (`id`, `msg`, `keyspace_id`) VALUES (*", nil)
 	}
-	expectBlpCheckpointCreationQueries(tc.leftMasterFakeDb)
-	expectBlpCheckpointCreationQueries(tc.rightMasterFakeDb)
 
 	// Fake stream health reponses because vtworker needs them to find the master.
 	tc.leftMasterQs = fakes.NewStreamHealthQueryService(leftMaster.Target())
@@ -240,7 +238,7 @@ type legacyTestQueryService struct {
 	*fakes.StreamHealthQueryService
 }
 
-func (sq *legacyTestQueryService) StreamExecute(ctx context.Context, target *querypb.Target, sql string, bindVariables map[string]*querypb.BindVariable, options *querypb.ExecuteOptions, callback func(reply *sqltypes.Result) error) error {
+func (sq *legacyTestQueryService) StreamExecute(ctx context.Context, target *querypb.Target, sql string, bindVariables map[string]*querypb.BindVariable, transactionID int64, options *querypb.ExecuteOptions, callback func(reply *sqltypes.Result) error) error {
 	// Custom parsing of the query we expect.
 	min := legacySplitCloneTestMin
 	max := legacySplitCloneTestMax
@@ -253,7 +251,7 @@ func (sq *legacyTestQueryService) StreamExecute(ctx context.Context, target *que
 				return err
 			}
 		} else if strings.HasPrefix(part, "`id`<") {
-			max, err = strconv.Atoi(part[5:])
+			max, _ = strconv.Atoi(part[5:])
 		}
 	}
 	sq.t.Logf("legacyTestQueryService: got query: %v with min %v max %v", sql, min, max)
@@ -382,9 +380,8 @@ func TestLegacySplitCloneV2_RetryDueToReparent(t *testing.T) {
 	defer tc.tearDown()
 
 	// Provoke a reparent just before the copy finishes.
-	// leftReplica will take over for the last, 30th, insert and the BLP checkpoint.
+	// leftReplica will take over for the last, 30th, insert and the vreplication checkpoint.
 	tc.leftReplicaFakeDb.AddExpectedQuery("INSERT INTO `vt_ks`.`table1` (`id`, `msg`, `keyspace_id`) VALUES (*", nil)
-	expectBlpCheckpointCreationQueries(tc.leftReplicaFakeDb)
 
 	// Do not let leftMaster succeed the 30th write.
 	tc.leftMasterFakeDb.DeleteAllEntriesAfterIndex(28)
@@ -442,9 +439,8 @@ func TestLegacySplitCloneV2_NoMasterAvailable(t *testing.T) {
 	tc.setUp(false /* v3 */)
 	defer tc.tearDown()
 
-	// leftReplica will take over for the last, 30th, insert and the BLP checkpoint.
+	// leftReplica will take over for the last, 30th, insert and the vreplication checkpoint.
 	tc.leftReplicaFakeDb.AddExpectedQuery("INSERT INTO `vt_ks`.`table1` (`id`, `msg`, `keyspace_id`) VALUES (*", nil)
-	expectBlpCheckpointCreationQueries(tc.leftReplicaFakeDb)
 
 	// During the 29th write, let the MASTER disappear.
 	tc.leftMasterFakeDb.GetEntry(28).AfterFunc = func() {
@@ -469,7 +465,8 @@ func TestLegacySplitCloneV2_NoMasterAvailable(t *testing.T) {
 	// Reset the retry stats now. It also happens when the worker starts but that
 	// is too late because this Go routine potentially reads it before the worker
 	// resets the old value.
-	statsRetryCounters.Reset()
+	statsRetryCounters.ResetAll()
+	errs := make(chan error, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -481,15 +478,20 @@ func TestLegacySplitCloneV2_NoMasterAvailable(t *testing.T) {
 
 			select {
 			case <-ctx.Done():
-				t.Fatalf("timed out waiting for vtworker to retry due to NoMasterAvailable: %v", ctx.Err())
+				errs <- ctx.Err()
+				close(errs)
+				return
 			case <-time.After(10 * time.Millisecond):
 				// Poll constantly.
 			}
 		}
 
 		// Make leftReplica the new MASTER.
+		tc.leftReplica.Agent.TabletExternallyReparented(ctx, "1")
 		tc.leftReplicaQs.UpdateType(topodatapb.TabletType_MASTER)
 		tc.leftReplicaQs.AddDefaultHealthResponse()
+		errs <- nil
+		close(errs)
 	}()
 
 	// Only wait 1 ms between retries, so that the test passes faster.
@@ -498,6 +500,10 @@ func TestLegacySplitCloneV2_NoMasterAvailable(t *testing.T) {
 	// Run the vtworker command.
 	if err := runCommand(t, tc.wi, tc.wi.wr, tc.defaultWorkerArgs); err != nil {
 		t.Fatal(err)
+	}
+	err := <-errs
+	if err != nil {
+		t.Fatalf("timed out waiting for vtworker to retry due to NoMasterAvailable: %v", err)
 	}
 }
 

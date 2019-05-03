@@ -17,15 +17,13 @@ limitations under the License.
 package planbuilder
 
 import (
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
 )
 
 // DDLPlan provides a plan for DDLs.
 type DDLPlan struct {
-	Action    string
-	TableName sqlparser.TableName
-	NewName   sqlparser.TableName
+	Action string
 }
 
 // DDLParse parses a DDL and produces a DDLPlan.
@@ -39,18 +37,14 @@ func DDLParse(sql string) (plan *DDLPlan) {
 		return &DDLPlan{Action: ""}
 	}
 	return &DDLPlan{
-		Action:    stmt.Action,
-		TableName: stmt.Table,
-		NewName:   stmt.NewName,
+		Action: stmt.Action,
 	}
 }
 
 func analyzeDDL(ddl *sqlparser.DDL, tables map[string]*schema.Table) *Plan {
 	// TODO(sougou): Add support for sequences.
 	plan := &Plan{
-		PlanID:  PlanDDL,
-		Table:   tables[ddl.Table.Name.String()],
-		NewName: ddl.NewName.Name,
+		PlanID: PlanDDL,
 	}
 	// this can become a whitelist of fully supported ddl actions as support grows
 	if ddl.PartitionSpec != nil {

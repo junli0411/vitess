@@ -21,10 +21,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/youtube/vitess/go/vt/topo"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/topo"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // timeUntilLockIsTaken is the time to wait until a lock is taken.
@@ -93,7 +93,7 @@ func checkLockTimeout(ctx context.Context, t *testing.T, conn topo.Conn) {
 
 	// test we can't take the lock again
 	fastCtx, cancel := context.WithTimeout(ctx, timeUntilLockIsTaken)
-	if _, err := conn.Lock(fastCtx, keyspacePath, "again"); err != topo.ErrTimeout {
+	if _, err := conn.Lock(fastCtx, keyspacePath, "again"); !topo.IsErrType(err, topo.Timeout) {
 		t.Fatalf("Lock(again): %v", err)
 	}
 	cancel()
@@ -104,7 +104,7 @@ func checkLockTimeout(ctx context.Context, t *testing.T, conn topo.Conn) {
 		time.Sleep(timeUntilLockIsTaken)
 		cancel()
 	}()
-	if _, err := conn.Lock(interruptCtx, keyspacePath, "interrupted"); err != topo.ErrInterrupted {
+	if _, err := conn.Lock(interruptCtx, keyspacePath, "interrupted"); !topo.IsErrType(err, topo.Interrupted) {
 		t.Fatalf("Lock(interrupted): %v", err)
 	}
 
@@ -142,10 +142,10 @@ func checkLockUnblocks(ctx context.Context, t *testing.T, conn topo.Conn) {
 		<-unblock
 		lockDescriptor, err := conn.Lock(ctx, keyspacePath, "unblocks")
 		if err != nil {
-			t.Fatalf("Lock(test_keyspace) failed: %v", err)
+			t.Errorf("Lock(test_keyspace) failed: %v", err)
 		}
 		if err = lockDescriptor.Unlock(ctx); err != nil {
-			t.Fatalf("Unlock(test_keyspace): %v", err)
+			t.Errorf("Unlock(test_keyspace): %v", err)
 		}
 		close(finished)
 	}()

@@ -25,9 +25,9 @@ import (
 	"os"
 	"sort"
 
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/exit"
-	"github.com/youtube/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/exit"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/sqlparser"
 )
 
 var (

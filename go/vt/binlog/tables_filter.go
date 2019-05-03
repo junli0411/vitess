@@ -19,10 +19,10 @@ package binlog
 import (
 	"strings"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/vt/log"
 
-	binlogdatapb "github.com/youtube/vitess/go/vt/proto/binlogdata"
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 const (

@@ -25,19 +25,20 @@ import (
 	"time"
 
 	"golang.org/x/net/context"
-
-	log "github.com/golang/glog"
-	"github.com/youtube/vitess/go/event"
-	"github.com/youtube/vitess/go/trace"
-	"github.com/youtube/vitess/go/vt/mysqlctl"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletmanager/events"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/rules"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
-
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/event"
+	"vitess.io/vitess/go/trace"
+	"vitess.io/vitess/go/vt/key"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/mysqlctl"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletmanager/events"
+	"vitess.io/vitess/go/vt/vttablet/tabletmanager/vreplication"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/rules"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 )
 
 var (
@@ -101,6 +102,7 @@ func (agent *ActionAgent) broadcastHealth() {
 	replicationDelay := agent._replicationDelay
 	healthError := agent._healthy
 	terTime := agent._tabletExternallyReparentedTime
+	healthyTime := agent._healthyTime
 	agent.mutex.Unlock()
 
 	// send it to our observers
@@ -108,18 +110,21 @@ func (agent *ActionAgent) broadcastHealth() {
 	stats := &querypb.RealtimeStats{
 		SecondsBehindMaster: uint32(replicationDelay.Seconds()),
 	}
-	if agent.BinlogPlayerMap != nil {
-		stats.SecondsBehindMasterFilteredReplication, stats.BinlogPlayersCount = agent.BinlogPlayerMap.StatusSummary()
-	}
+	stats.SecondsBehindMasterFilteredReplication, stats.BinlogPlayersCount = vreplication.StatusSummary()
 	stats.Qps = tabletenv.QPSRates.TotalRate()
 	if healthError != nil {
 		stats.HealthError = healthError.Error()
+	} else {
+		timeSinceLastCheck := time.Since(healthyTime)
+		if timeSinceLastCheck > *healthCheckInterval*3 {
+			stats.HealthError = fmt.Sprintf("last health check is too old: %s > %s", timeSinceLastCheck, *healthCheckInterval*3)
+		}
 	}
 	var ts int64
 	if !terTime.IsZero() {
 		ts = terTime.Unix()
 	}
-	go agent.QueryServiceControl.BroadcastHealth(ts, stats)
+	go agent.QueryServiceControl.BroadcastHealth(ts, stats, *healthCheckInterval*3)
 }
 
 // refreshTablet needs to be run after an action may have changed the current
@@ -128,17 +133,15 @@ func (agent *ActionAgent) refreshTablet(ctx context.Context, reason string) erro
 	agent.checkLock()
 	log.Infof("Executing post-action state refresh: %v", reason)
 
-	span := trace.NewSpanFromContext(ctx)
-	span.StartLocal("ActionAgent.refreshTablet")
+	span, ctx := trace.NewSpan(ctx, "ActionAgent.refreshTablet")
 	span.Annotate("reason", reason)
 	defer span.Finish()
-	ctx = trace.NewContext(ctx, span)
 
 	// Actions should have side effects on the tablet, so reload the data.
 	ti, err := agent.TopoServer.GetTablet(ctx, agent.TabletAlias)
 	if err != nil {
 		log.Warningf("Failed rereading tablet after %v - services may be inconsistent: %v", reason, err)
-		return fmt.Errorf("refreshTablet failed rereading tablet after %v: %v", reason, err)
+		return vterrors.Wrapf(err, "refreshTablet failed rereading tablet after %v", reason)
 	}
 	tablet := ti.Tablet
 
@@ -189,8 +192,7 @@ func (agent *ActionAgent) updateState(ctx context.Context, newTablet *topodatapb
 func (agent *ActionAgent) changeCallback(ctx context.Context, oldTablet, newTablet *topodatapb.Tablet) {
 	agent.checkLock()
 
-	span := trace.NewSpanFromContext(ctx)
-	span.StartLocal("ActionAgent.changeCallback")
+	span, ctx := trace.NewSpan(ctx, "ActionAgent.changeCallback")
 	defer span.Finish()
 
 	allowQuery := topo.IsRunningQueryService(newTablet.Type)
@@ -216,12 +218,30 @@ func (agent *ActionAgent) changeCallback(ctx context.Context, oldTablet, newTabl
 					disallowQueryReason = "master tablet with filtered replication on"
 				}
 			}
+			srvKeyspace, err := agent.TopoServer.GetSrvKeyspace(ctx, newTablet.Alias.Cell, newTablet.Keyspace)
+			if err != nil {
+				log.Errorf("failed to get SrvKeyspace %v with: %v", newTablet.Keyspace, err)
+			} else {
+
+				for _, partition := range srvKeyspace.GetPartitions() {
+					if partition.GetServedType() != newTablet.Type {
+						continue
+					}
+
+					for _, tabletControl := range partition.GetShardTabletControls() {
+						if key.KeyRangeEqual(tabletControl.GetKeyRange(), newTablet.GetKeyRange()) {
+							if tabletControl.QueryServiceDisabled {
+								allowQuery = false
+								disallowQueryReason = "TabletControl.DisableQueryService set"
+							}
+							break
+						}
+					}
+				}
+			}
 			if tc := shardInfo.GetTabletControl(newTablet.Type); tc != nil {
 				if topo.InCellList(newTablet.Alias.Cell, tc.Cells) {
-					if tc.DisableQueryService {
-						allowQuery = false
-						disallowQueryReason = "TabletControl.DisableQueryService set"
-					}
+
 					blacklistedTables = tc.BlacklistedTables
 				}
 			}
@@ -300,16 +320,20 @@ func (agent *ActionAgent) changeCallback(ctx context.Context, oldTablet, newTabl
 
 	// Update the stats to our current type.
 	if agent.exportStats {
-		agent.statsTabletType.Set(topoproto.TabletTypeLString(newTablet.Type))
+		s := topoproto.TabletTypeLString(newTablet.Type)
+		agent.statsTabletType.Set(s)
+		agent.statsTabletTypeCount.Add(s, 1)
 	}
 
-	// See if we need to start or stop any binlog player.
-	if agent.BinlogPlayerMap != nil {
-		if newTablet.Type == topodatapb.TabletType_MASTER {
-			agent.BinlogPlayerMap.RefreshMap(agent.batchCtx, newTablet, shardInfo)
+	// See if we need to start or stop vreplication.
+	if newTablet.Type == topodatapb.TabletType_MASTER {
+		if err := agent.VREngine.Open(agent.batchCtx); err != nil {
+			log.Errorf("Could not start VReplication engine: %v. Will keep retrying at health check intervals.", err)
 		} else {
-			agent.BinlogPlayerMap.StopAllPlayersAndReset()
+			log.Info("VReplication engine started")
 		}
+	} else {
+		agent.VREngine.Close()
 	}
 
 	// Broadcast health changes to vtgate immediately.

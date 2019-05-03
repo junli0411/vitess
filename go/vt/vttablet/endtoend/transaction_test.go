@@ -26,15 +26,15 @@ import (
 	"github.com/golang/protobuf/proto"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/endtoend/framework"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/endtoend/framework"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 func TestCommit(t *testing.T) {
@@ -580,7 +580,7 @@ func TestMMCommitFlow(t *testing.T) {
 	}
 
 	err = client.SetRollback("aa", 0)
-	want = "could not transition to ROLLBACK: aa, CallerID: dev"
+	want = "could not transition to ROLLBACK: aa (CallerID: dev)"
 	if err == nil || err.Error() != want {
 		t.Errorf("%v, must contain %s", err, want)
 	}
@@ -713,7 +713,7 @@ func TestWatchdog(t *testing.T) {
 	if dtid != "aa" {
 		t.Errorf("dtid: %s, want aa", dtid)
 	}
-	diff := time.Now().Sub(start)
+	diff := time.Since(start)
 	if diff < 1*time.Second {
 		t.Errorf("diff: %v, want greater than 1s", diff)
 	}
@@ -797,6 +797,10 @@ func TestManualTwopcz(t *testing.T) {
 		return
 	}
 	_, err = client.Execute("insert into vitess_test (intval, floatval, charval, binval) values(4, null, null, null)", nil)
+	if err != nil {
+		t.Error(err)
+		return
+	}
 	_, err = client.Execute("insert into vitess_test (intval, floatval, charval, binval) values(5, null, null, null)", nil)
 	if err != nil {
 		t.Error(err)
@@ -816,6 +820,10 @@ func TestManualTwopcz(t *testing.T) {
 		return
 	}
 	_, err = client.Execute("insert into vitess_test (intval, floatval, charval, binval) values(6, null, null, null)", nil)
+	if err != nil {
+		t.Error(err)
+		return
+	}
 	_, err = client.Execute("insert into vitess_test (intval, floatval, charval, binval) values(7, null, null, null)", nil)
 	if err != nil {
 		t.Error(err)
@@ -840,6 +848,10 @@ func TestManualTwopcz(t *testing.T) {
 	}})
 	defer client.ConcludeTransaction("distributed")
 
+	if err != nil {
+		t.Error(err)
+		return
+	}
 	fmt.Printf("%s/twopcz\n", framework.ServerAddress)
 	fmt.Print("Sleeping for 30 seconds\n")
 	time.Sleep(30 * time.Second)

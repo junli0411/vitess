@@ -27,16 +27,17 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/hook"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/hook"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/mysqlctl/tmutils"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
 
-	logutilpb "github.com/youtube/vitess/go/vt/proto/logutil"
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	replicationdatapb "github.com/youtube/vitess/go/vt/proto/replicationdata"
-	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	logutilpb "vitess.io/vitess/go/vt/proto/logutil"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	replicationdatapb "vitess.io/vitess/go/vt/proto/replicationdata"
+	tabletmanagerdatapb "vitess.io/vitess/go/vt/proto/tabletmanagerdata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // NewFakeTabletManagerClient should be used to create a new FakeTabletManagerClient.
@@ -90,6 +91,16 @@ func (client *FakeTabletManagerClient) GetSchema(ctx context.Context, tablet *to
 // GetPermissions is part of the tmclient.TabletManagerClient interface.
 func (client *FakeTabletManagerClient) GetPermissions(ctx context.Context, tablet *topodatapb.Tablet) (*tabletmanagerdatapb.Permissions, error) {
 	return &tabletmanagerdatapb.Permissions{}, nil
+}
+
+// LockTables is part of the tmclient.TabletManagerClient interface.
+func (client *FakeTabletManagerClient) LockTables(ctx context.Context, tablet *topodatapb.Tablet) error {
+	return nil
+}
+
+// UnlockTables is part of the tmclient.TabletManagerClient interface.
+func (client *FakeTabletManagerClient) UnlockTables(ctx context.Context, tablet *topodatapb.Tablet) error {
+	return nil
 }
 
 //
@@ -185,6 +196,11 @@ func (client *FakeTabletManagerClient) StartSlave(ctx context.Context, tablet *t
 	return nil
 }
 
+// StartSlaveUntilAfter is part of the tmclient.TabletManagerClient interface.
+func (client *FakeTabletManagerClient) StartSlaveUntilAfter(ctx context.Context, tablet *topodatapb.Tablet, position string, duration time.Duration) error {
+	return nil
+}
+
 // TabletExternallyReparented is part of the tmclient.TabletManagerClient interface.
 func (client *FakeTabletManagerClient) TabletExternallyReparented(ctx context.Context, tablet *topodatapb.Tablet, externalID string) error {
 	return nil
@@ -195,32 +211,19 @@ func (client *FakeTabletManagerClient) GetSlaves(ctx context.Context, tablet *to
 	return nil, nil
 }
 
-// WaitBlpPosition is part of the tmclient.TabletManagerClient interface.
-func (client *FakeTabletManagerClient) WaitBlpPosition(ctx context.Context, tablet *topodatapb.Tablet, blpPosition *tabletmanagerdatapb.BlpPosition, waitTime time.Duration) error {
+// VReplicationExec is part of the tmclient.TabletManagerClient interface.
+func (client *FakeTabletManagerClient) VReplicationExec(ctx context.Context, tablet *topodatapb.Tablet, query string) (*querypb.QueryResult, error) {
+	// This result satisfies 'select pos from _vt.vreplication...' called from split clone unit tests in go/vt/worker.
+	result := sqltypes.MakeTestResult(
+		sqltypes.MakeTestFields("pos", "varchar"),
+		"MariaDB/1-1-1",
+	)
+	return sqltypes.ResultToProto3(result), nil
+}
+
+// VReplicationWaitForPos is part of the tmclient.TabletManagerClient interface.
+func (client *FakeTabletManagerClient) VReplicationWaitForPos(ctx context.Context, tablet *topodatapb.Tablet, id int, pos string) error {
 	return nil
-}
-
-// StopBlp is part of the tmclient.TabletManagerClient interface.
-func (client *FakeTabletManagerClient) StopBlp(ctx context.Context, tablet *topodatapb.Tablet) ([]*tabletmanagerdatapb.BlpPosition, error) {
-	// TODO(aaijazi): this works because all tests so far only need to rely on Uid 0.
-	// Ideally, this should turn into a full mock, where the caller can configure the exact
-	// return value.
-	bpl := []*tabletmanagerdatapb.BlpPosition{
-		{
-			Uid: uint32(0),
-		},
-	}
-	return bpl, nil
-}
-
-// StartBlp is part of the tmclient.TabletManagerClient interface.
-func (client *FakeTabletManagerClient) StartBlp(ctx context.Context, tablet *topodatapb.Tablet) error {
-	return nil
-}
-
-// RunBlpUntil is part of the tmclient.TabletManagerClient interface.
-func (client *FakeTabletManagerClient) RunBlpUntil(ctx context.Context, tablet *topodatapb.Tablet, positions []*tabletmanagerdatapb.BlpPosition, waitTime time.Duration) (string, error) {
-	return "", nil
 }
 
 //
@@ -250,6 +253,11 @@ func (client *FakeTabletManagerClient) InitSlave(ctx context.Context, tablet *to
 // DemoteMaster is part of the tmclient.TabletManagerClient interface.
 func (client *FakeTabletManagerClient) DemoteMaster(ctx context.Context, tablet *topodatapb.Tablet) (string, error) {
 	return "", nil
+}
+
+// UndoDemoteMaster is part of the tmclient.TabletManagerClient interface.
+func (client *FakeTabletManagerClient) UndoDemoteMaster(ctx context.Context, tablet *topodatapb.Tablet) error {
+	return nil
 }
 
 // PromoteSlaveWhenCaughtUp is part of the tmclient.TabletManagerClient interface.
@@ -293,7 +301,7 @@ func (e *eofEventStream) Recv() (*logutilpb.Event, error) {
 }
 
 // Backup is part of the tmclient.TabletManagerClient interface.
-func (client *FakeTabletManagerClient) Backup(ctx context.Context, tablet *topodatapb.Tablet, concurrency int) (logutil.EventStream, error) {
+func (client *FakeTabletManagerClient) Backup(ctx context.Context, tablet *topodatapb.Tablet, concurrency int, allowMaster bool) (logutil.EventStream, error) {
 	return &eofEventStream{}, nil
 }
 

@@ -23,12 +23,15 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/key"
+	"vitess.io/vitess/go/vt/vterrors"
 )
 
 var (
-	_ Functional = (*Hash)(nil)
+	_ Vindex     = (*Hash)(nil)
 	_ Reversible = (*Hash)(nil)
 )
 
@@ -54,16 +57,38 @@ func (vind *Hash) Cost() int {
 	return 1
 }
 
-// Map returns the corresponding KeyspaceId values for the given ids.
-func (vind *Hash) Map(_ VCursor, ids []sqltypes.Value) ([]KsidOrRange, error) {
-	out := make([]KsidOrRange, 0, len(ids))
-	for _, id := range ids {
-		num, err := sqltypes.ToUint64(id)
+// IsUnique returns true since the Vindex is unique.
+func (vind *Hash) IsUnique() bool {
+	return true
+}
+
+// IsFunctional returns true since the Vindex is functional.
+func (vind *Hash) IsFunctional() bool {
+	return true
+}
+
+// Map can map ids to key.Destination objects.
+func (vind *Hash) Map(cursor VCursor, ids []sqltypes.Value) ([]key.Destination, error) {
+	out := make([]key.Destination, len(ids))
+	for i, id := range ids {
+		var num uint64
+		var err error
+
+		if id.IsSigned() {
+			// This is ToUint64 with no check on negative values.
+			str := id.ToString()
+			var ival int64
+			ival, err = strconv.ParseInt(str, 10, 64)
+			num = uint64(ival)
+		} else {
+			num, err = sqltypes.ToUint64(id)
+		}
+
 		if err != nil {
-			out = append(out, KsidOrRange{})
+			out[i] = key.DestinationNone{}
 			continue
 		}
-		out = append(out, KsidOrRange{ID: vhash(num)})
+		out[i] = key.DestinationKeyspaceID(vhash(num))
 	}
 	return out, nil
 }
@@ -74,9 +99,9 @@ func (vind *Hash) Verify(_ VCursor, ids []sqltypes.Value, ksids [][]byte) ([]boo
 	for i := range ids {
 		num, err := sqltypes.ToUint64(ids[i])
 		if err != nil {
-			return nil, fmt.Errorf("hash.Verify: %v", err)
+			return nil, vterrors.Wrap(err, "hash.Verify")
 		}
-		out[i] = (bytes.Compare(vhash(num), ksids[i]) == 0)
+		out[i] = bytes.Equal(vhash(num), ksids[i])
 	}
 	return out, nil
 }

@@ -19,10 +19,10 @@ package memorytopo
 import (
 	"path"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo"
 )
 
 // NewMasterParticipation is part of the topo.Server interface
@@ -33,7 +33,7 @@ func (c *Conn) NewMasterParticipation(name, id string) (topo.MasterParticipation
 	// Make sure the global path exists.
 	electionPath := path.Join(electionsPath, name)
 	if n := c.factory.getOrCreatePath(c.cell, electionPath); n == nil {
-		return nil, topo.ErrNoNode
+		return nil, topo.NewError(topo.NoNode, electionPath)
 	}
 
 	return &cMasterParticipation{
@@ -72,7 +72,7 @@ func (mp *cMasterParticipation) WaitForMastership() (context.Context, error) {
 	// If Stop was already called, mp.done is closed, so we are interrupted.
 	select {
 	case <-mp.done:
-		return nil, topo.ErrInterrupted
+		return nil, topo.NewError(topo.Interrupted, "mastership")
 	default:
 	}
 
@@ -83,16 +83,14 @@ func (mp *cMasterParticipation) WaitForMastership() (context.Context, error) {
 	// we just cancel that context.
 	lockCtx, lockCancel := context.WithCancel(context.Background())
 	go func() {
-		select {
-		case <-mp.stop:
-			if ld != nil {
-				if err := ld.Unlock(context.Background()); err != nil {
-					log.Errorf("failed to unlock LockDescriptor %v: %v", electionPath, err)
-				}
+		<-mp.stop
+		if ld != nil {
+			if err := ld.Unlock(context.Background()); err != nil {
+				log.Errorf("failed to unlock LockDescriptor %v: %v", electionPath, err)
 			}
-			lockCancel()
-			close(mp.done)
 		}
+		lockCancel()
+		close(mp.done)
 	}()
 
 	// Try to get the mastership, by getting a lock.

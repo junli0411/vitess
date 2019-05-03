@@ -17,11 +17,11 @@ limitations under the License.
 package servenv
 
 import (
-	"github.com/youtube/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/logutil"
 )
 
 func init() {
-	onInit(func() {
+	OnInit(func() {
 		go logutil.PurgeLogs()
 	})
 

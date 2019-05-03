@@ -22,13 +22,13 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/key"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/vtgate/vindexes"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/key"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/vtgate/vindexes"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 var useV3ReshardingMode = flag.Bool("binlog_use_v3_resharding_mode", true, "True iff the binlog streamer should use V3-style sharding, which doesn't require a preset sharding key column.")
@@ -104,7 +104,7 @@ func (r *keyspaceIDResolverFactoryV2) keyspaceID(v sqltypes.Value) ([]byte, erro
 	case topodatapb.KeyspaceIdType_UINT64:
 		i, err := sqltypes.ToUint64(v)
 		if err != nil {
-			return nil, fmt.Errorf("Non numerical value: %v", err)
+			return nil, fmt.Errorf("non numerical value: %v", err)
 		}
 		return key.Uint64Key(i).Bytes(), nil
 	default:
@@ -134,18 +134,10 @@ func newKeyspaceIDResolverFactoryV3(ctx context.Context, ts *topo.Server, keyspa
 			return -1, nil, fmt.Errorf("no vschema definition for table %v", table.Name)
 		}
 
-		// The primary vindex is most likely the sharding key,
-		// and has to be unique.
-		if len(tableSchema.ColumnVindexes) == 0 {
-			return -1, nil, fmt.Errorf("no vindex definition for table %v", table.Name)
-		}
-		colVindex := tableSchema.ColumnVindexes[0]
-		if colVindex.Vindex.Cost() > 1 {
-			return -1, nil, fmt.Errorf("primary vindex cost is too high for table %v", table.Name)
-		}
-		unique, ok := colVindex.Vindex.(vindexes.Unique)
-		if !ok {
-			return -1, nil, fmt.Errorf("primary vindex is not unique for table %v", table.Name)
+		// use the lowest cost unique vindex as the sharding key
+		colVindex, err := vindexes.FindVindexForSharding(table.Name.String(), tableSchema.ColumnVindexes)
+		if err != nil {
+			return -1, nil, err
 		}
 
 		// TODO @rafael - when rewriting the mapping function, this will need to change.
@@ -155,7 +147,7 @@ func newKeyspaceIDResolverFactoryV3(ctx context.Context, ts *topo.Server, keyspa
 			if col.Name.EqualString(shardingColumnName) {
 				// We found the column.
 				return i, &keyspaceIDResolverFactoryV3{
-					vindex: unique,
+					vindex: colVindex.Vindex,
 				}, nil
 			}
 		}
@@ -166,20 +158,20 @@ func newKeyspaceIDResolverFactoryV3(ctx context.Context, ts *topo.Server, keyspa
 
 // keyspaceIDResolverFactoryV3 uses the Vindex to compute the value.
 type keyspaceIDResolverFactoryV3 struct {
-	vindex vindexes.Unique
+	vindex vindexes.Vindex
 }
 
 func (r *keyspaceIDResolverFactoryV3) keyspaceID(v sqltypes.Value) ([]byte, error) {
-	ids := []sqltypes.Value{v}
-	ksids, err := r.vindex.Map(nil, ids)
+	destinations, err := r.vindex.Map(nil, []sqltypes.Value{v})
 	if err != nil {
 		return nil, err
 	}
-	if len(ksids) != 1 {
-		return nil, fmt.Errorf("mapping row to keyspace id returned an invalid array of keyspace ids: %v", ksids)
+	if len(destinations) != 1 {
+		return nil, fmt.Errorf("mapping row to keyspace id returned an invalid array of destinations: %v", key.DestinationsString(destinations))
 	}
-	if ksids[0].Range != nil || ksids[0].ID == nil {
-		return nil, fmt.Errorf("could not map %v to a keyspace id", v)
+	ksid, ok := destinations[0].(key.DestinationKeyspaceID)
+	if !ok || len(ksid) == 0 {
+		return nil, fmt.Errorf("could not map %v to a keyspace id, got destination %v", v, destinations[0])
 	}
-	return ksids[0].ID, nil
+	return ksid, nil
 }

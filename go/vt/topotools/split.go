@@ -20,9 +20,9 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/youtube/vitess/go/vt/key"
-	"github.com/youtube/vitess/go/vt/topo"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/key"
+	"vitess.io/vitess/go/vt/topo"
 )
 
 // OverlappingShards contains sets of shards that overlap which each-other.
@@ -101,7 +101,7 @@ func findOverlappingShards(shardMap map[string]*topo.ShardInfo) ([]*OverlappingS
 			si := findIntersectingShard(shardMap, left)
 			if si != nil {
 				if intersect(si, right) {
-					return nil, fmt.Errorf("Shard %v intersects with more than one shard, this is not supported", si.ShardName())
+					return nil, fmt.Errorf("shard %v intersects with more than one shard, this is not supported", si.ShardName())
 				}
 				foundOne = true
 				right = append(right, si)
@@ -111,7 +111,7 @@ func findOverlappingShards(shardMap map[string]*topo.ShardInfo) ([]*OverlappingS
 			si = findIntersectingShard(shardMap, right)
 			if si != nil {
 				if intersect(si, left) {
-					return nil, fmt.Errorf("Shard %v intersects with more than one shard, this is not supported", si.ShardName())
+					return nil, fmt.Errorf("shard %v intersects with more than one shard, this is not supported", si.ShardName())
 				}
 				foundOne = true
 				left = append(left, si)

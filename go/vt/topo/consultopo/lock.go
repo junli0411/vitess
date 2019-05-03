@@ -17,14 +17,15 @@ limitations under the License.
 package consultopo
 
 import (
-	"fmt"
 	"path"
 
-	log "github.com/golang/glog"
 	"github.com/hashicorp/consul/api"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo"
 )
 
 // consulLockDescriptor implements topo.LockDescriptor.
@@ -43,7 +44,7 @@ func (s *Server) Lock(ctx context.Context, dirPath, contents string) (topo.LockD
 		// easiest way to do this is to return convertError(err).
 		// It may lose some of the context, if this is an issue,
 		// maybe logging the error would work here.
-		return nil, convertError(err)
+		return nil, convertError(err, dirPath)
 	}
 
 	lockPath := path.Join(s.root, dirPath, locksFilename)
@@ -66,7 +67,7 @@ func (s *Server) Lock(ctx context.Context, dirPath, contents string) (topo.LockD
 		s.mu.Unlock()
 		select {
 		case <-ctx.Done():
-			return nil, convertError(ctx.Err())
+			return nil, convertError(ctx.Err(), dirPath)
 		case <-li.done:
 		}
 
@@ -106,7 +107,7 @@ func (s *Server) Lock(ctx context.Context, dirPath, contents string) (topo.LockD
 func (ld *consulLockDescriptor) Check(ctx context.Context) error {
 	select {
 	case <-ld.lost:
-		return fmt.Errorf("lost channel closed")
+		return vterrors.Errorf(vtrpc.Code_INTERNAL, "lost channel closed")
 	default:
 	}
 	return nil
@@ -123,7 +124,7 @@ func (s *Server) unlock(ctx context.Context, lockPath string) error {
 	li, ok := s.locks[lockPath]
 	s.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("unlock: lock %v not held", lockPath)
+		return vterrors.Errorf(vtrpc.Code_INVALID_ARGUMENT, "unlock: lock %v not held", lockPath)
 	}
 
 	// Try to unlock our lock. We will clean up our entry anyway.

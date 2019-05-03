@@ -27,10 +27,10 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqltypes"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 // connectForReplication is a helper method to connect for replication
@@ -87,32 +87,17 @@ func connectForReplication(t *testing.T, rbr bool) (*mysql.Conn, mysql.BinlogFor
 	// Wait for the FORMAT_DESCRIPTION_EVENT
 	var f mysql.BinlogFormat
 	for {
-		data, err := conn.ReadPacket()
+		be, err := conn.ReadBinlogEvent()
 		if err != nil {
 			t.Fatalf("ReadPacket failed: %v", err)
 		}
-
-		// Make sure it's a replication packet.
-		switch data[0] {
-		case mysql.OKPacket:
-			// What we expect, handled below.
-		case mysql.ErrPacket:
-			err := mysql.ParseErrorPacket(data)
-			t.Fatalf("ReadPacket returned an error packet: %v", err)
-		default:
-			// Very unexpected.
-			t.Fatalf("ReadPacket returned a weird packet: %v", data)
-		}
-
-		// See what we got.
-		be := conn.MakeBinlogEvent(data[1:])
 		if !be.IsValid() {
 			t.Fatalf("NewMysql56BinlogEvent has an invalid packet: %v", be)
 		}
 
 		// Skip rotate packets. These are normal as first packets.
 		if be.IsRotate() {
-			t.Logf("Got a rotate packet: %v", data[20:])
+			t.Logf("Got a rotate packet: %v", be)
 			continue
 		}
 
@@ -150,10 +135,10 @@ func TestReplicationConnectionClosing(t *testing.T) {
 			if err != nil {
 				serr, ok := err.(*mysql.SQLError)
 				if !ok {
-					t.Fatalf("Got a non mysql.SQLError error: %v", err)
+					t.Errorf("Got a non mysql.SQLError error: %v", err)
 				}
 				if serr.Num != mysql.CRServerLost {
-					t.Fatalf("Got an unexpected mysql.SQLError error: %v", serr)
+					t.Errorf("Got an unexpected mysql.SQLError error: %v", serr)
 				}
 				// we got the right error, all good.
 				return
@@ -165,10 +150,10 @@ func TestReplicationConnectionClosing(t *testing.T) {
 				// What we expect, keep going.
 			case mysql.ErrPacket:
 				err := mysql.ParseErrorPacket(data)
-				t.Fatalf("ReadPacket returned an error packet: %v", err)
+				t.Errorf("ReadPacket returned an error packet: %v", err)
 			default:
 				// Very unexpected.
-				t.Fatalf("ReadPacket returned a weird packet: %v", data)
+				t.Errorf("ReadPacket returned a weird packet: %v", data)
 			}
 		}
 	}()
@@ -239,25 +224,10 @@ func TestStatementReplicationWithRealDatabase(t *testing.T) {
 	gotInsert := false
 	gotCommit := false
 	for gtidCount < 2 || !gotCreateTable || !gotBegin || !gotInsert || !gotCommit {
-		data, err := conn.ReadPacket()
+		be, err := conn.ReadBinlogEvent()
 		if err != nil {
 			t.Fatalf("ReadPacket failed: %v", err)
 		}
-
-		// Make sure it's a replication packet.
-		switch data[0] {
-		case mysql.OKPacket:
-			// What we expect, handled below.
-		case mysql.ErrPacket:
-			err := mysql.ParseErrorPacket(data)
-			t.Fatalf("ReadPacket returned an error packet: %v", err)
-		default:
-			// Very unexpected.
-			t.Fatalf("ReadPacket returned a weird packet: %v", data)
-		}
-
-		// See what we got, strip the checksum.
-		be := conn.MakeBinlogEvent(data[1:])
 		if !be.IsValid() {
 			t.Fatalf("read an invalid packet: %v", be)
 		}
@@ -362,25 +332,10 @@ func TestRowReplicationWithRealDatabase(t *testing.T) {
 
 	//	for i := 0; i < 6 && (gtidCount < 2 || !gotCreateTable || !gotTableMapEvent || !gotBegin || !gotInsert || !gotCommit); i++ {
 	for gtidCount < 4 || !gotCreateTable || !gotTableMapEvent || !gotInsert || !gotUpdate || !gotDelete || beginCount != 3 || commitCount != 3 {
-		data, err := conn.ReadPacket()
+		be, err := conn.ReadBinlogEvent()
 		if err != nil {
 			t.Fatalf("ReadPacket failed: %v", err)
 		}
-
-		// Make sure it's a replication packet.
-		switch data[0] {
-		case mysql.OKPacket:
-			// What we expect, handled below.
-		case mysql.ErrPacket:
-			err := mysql.ParseErrorPacket(data)
-			t.Fatalf("ReadPacket returned an error packet: %v", err)
-		default:
-			// Very unexpected.
-			t.Fatalf("ReadPacket returned a weird packet: %v", data)
-		}
-
-		// See what we got, strip the checksum.
-		be := conn.MakeBinlogEvent(data[1:])
 		if !be.IsValid() {
 			t.Fatalf("read an invalid packet: %v", be)
 		}
@@ -1095,25 +1050,10 @@ func TestRowReplicationTypes(t *testing.T) {
 	var values []sqltypes.Value
 
 	for values == nil {
-		data, err := conn.ReadPacket()
+		be, err := conn.ReadBinlogEvent()
 		if err != nil {
 			t.Fatalf("ReadPacket failed: %v", err)
 		}
-
-		// Make sure it's a replication packet.
-		switch data[0] {
-		case mysql.OKPacket:
-			// What we expect, handled below.
-		case mysql.ErrPacket:
-			err := mysql.ParseErrorPacket(data)
-			t.Fatalf("ReadPacket returned an error packet: %v", err)
-		default:
-			// Very unexpected.
-			t.Fatalf("ReadPacket returned a weird packet: %v", data)
-		}
-
-		// See what we got, strip the checksum.
-		be := conn.MakeBinlogEvent(data[1:])
 		if !be.IsValid() {
 			t.Fatalf("read an invalid packet: %v", be)
 		}

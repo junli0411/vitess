@@ -20,24 +20,25 @@ limitations under the License.
 package vtexplain
 
 import (
-	"encoding/json"
 	"fmt"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	"github.com/youtube/vitess/go/vt/discovery"
-	"github.com/youtube/vitess/go/vt/key"
-	"github.com/youtube/vitess/go/vt/srvtopo"
-	"github.com/youtube/vitess/go/vt/vtgate"
-	"github.com/youtube/vitess/go/vt/vtgate/engine"
-	"github.com/youtube/vitess/go/vt/vtgate/gateway"
+	"vitess.io/vitess/go/json2"
+	"vitess.io/vitess/go/vt/discovery"
+	"vitess.io/vitess/go/vt/key"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/srvtopo"
+	"vitess.io/vitess/go/vt/vtgate"
+	"vitess.io/vitess/go/vt/vtgate/engine"
+	"vitess.io/vitess/go/vt/vtgate/gateway"
 
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice"
+	"vitess.io/vitess/go/vt/vttablet/queryservice"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vschemapb "github.com/youtube/vitess/go/vt/proto/vschema"
-	vtgatepb "github.com/youtube/vitess/go/vt/proto/vtgate"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vschemapb "vitess.io/vitess/go/vt/proto/vschema"
+	vtgatepb "vitess.io/vitess/go/vt/proto/vtgate"
 )
 
 var (
@@ -46,7 +47,7 @@ var (
 	healthCheck    *discovery.FakeHealthCheck
 
 	vtgateSession = &vtgatepb.Session{
-		TargetString: "@master",
+		TargetString: "",
 		Autocommit:   true,
 	}
 )
@@ -62,6 +63,8 @@ func initVtgateExecutor(vSchemaStr string, opts *Options) error {
 		return err
 	}
 
+	vtgateSession.TargetString = opts.Target
+
 	streamSize := 10
 	queryPlanCacheSize := int64(10)
 	vtgateExecutor = vtgate.NewExecutor(context.Background(), explainTopo, vtexplainCell, "", resolver, opts.Normalize, streamSize, queryPlanCacheSize, false /* legacyAutocommit */)
@@ -70,8 +73,9 @@ func initVtgateExecutor(vSchemaStr string, opts *Options) error {
 }
 
 func newFakeResolver(opts *Options, hc discovery.HealthCheck, serv srvtopo.Server, cell string) *vtgate.Resolver {
-	gw := gateway.GetCreator()(hc, nil, serv, cell, 3)
-	gw.WaitForTablets(context.Background(), []topodatapb.TabletType{topodatapb.TabletType_REPLICA})
+	ctx := context.Background()
+	gw := gateway.GetCreator()(ctx, hc, serv, cell, 3)
+	gw.WaitForTablets(ctx, []topodatapb.TabletType{topodatapb.TabletType_REPLICA})
 
 	txMode := vtgatepb.TransactionMode_MULTI
 	if opts.ExecutionMode == ModeTwoPC {
@@ -87,11 +91,15 @@ func buildTopology(opts *Options, vschemaStr string, numShardsPerKeyspace int) e
 	explainTopo.Lock.Lock()
 	defer explainTopo.Lock.Unlock()
 
-	explainTopo.Keyspaces = make(map[string]*vschemapb.Keyspace)
-	err := json.Unmarshal([]byte(vschemaStr), &explainTopo.Keyspaces)
+	// We have to use proto's custom json loader so it can
+	// handle string->enum conversion correctly.
+	var srvVSchema vschemapb.SrvVSchema
+	wrappedStr := fmt.Sprintf(`{"keyspaces": %s}`, vschemaStr)
+	err := json2.Unmarshal([]byte(wrappedStr), &srvVSchema)
 	if err != nil {
 		return err
 	}
+	explainTopo.Keyspaces = srvVSchema.Keyspaces
 
 	explainTopo.TabletConns = make(map[string]*explainTablet)
 	for ks, vschema := range explainTopo.Keyspaces {
@@ -131,7 +139,7 @@ func vtgateExecute(sql string) ([]*engine.Plan, map[string]*TabletActions, error
 		}
 		planCache.Clear()
 
-		return nil, nil, fmt.Errorf("vtexplain execute error in '%s': %v", sql, err)
+		return nil, nil, vterrors.Wrapf(err, "vtexplain execute error in '%s'", sql)
 	}
 
 	var plans []*engine.Plan

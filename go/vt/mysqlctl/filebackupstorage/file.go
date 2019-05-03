@@ -28,7 +28,7 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/mysqlctl/backupstorage"
+	"vitess.io/vitess/go/vt/mysqlctl/backupstorage"
 )
 
 var (
@@ -56,7 +56,7 @@ func (fbh *FileBackupHandle) Name() string {
 }
 
 // AddFile is part of the BackupHandle interface
-func (fbh *FileBackupHandle) AddFile(ctx context.Context, filename string) (io.WriteCloser, error) {
+func (fbh *FileBackupHandle) AddFile(ctx context.Context, filename string, filesize int64) (io.WriteCloser, error) {
 	if fbh.readOnly {
 		return nil, fmt.Errorf("AddFile cannot be called on read-only backup")
 	}

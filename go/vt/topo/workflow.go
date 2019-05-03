@@ -22,7 +22,7 @@ import (
 	"github.com/golang/protobuf/proto"
 	"golang.org/x/net/context"
 
-	workflowpb "github.com/youtube/vitess/go/vt/proto/workflow"
+	workflowpb "vitess.io/vitess/go/vt/proto/workflow"
 )
 
 // This file provides the utility methods to save / retrieve workflows
@@ -47,10 +47,10 @@ type WorkflowInfo struct {
 // workflows. They are sorted by uuid.
 func (ts *Server) GetWorkflowNames(ctx context.Context) ([]string, error) {
 	entries, err := ts.globalCell.ListDir(ctx, workflowsPath, false /*full*/)
-	switch err {
-	case ErrNoNode:
+	switch {
+	case IsErrType(err, NoNode):
 		return nil, nil
-	case nil:
+	case err == nil:
 		return DirEntriesToStringArray(entries), nil
 	default:
 		return nil, err

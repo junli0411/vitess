@@ -21,7 +21,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/youtube/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sqltypes"
 )
 
 func TestOrderedAggregateExecute(t *testing.T) {
@@ -29,7 +29,7 @@ func TestOrderedAggregateExecute(t *testing.T) {
 		"col|count(*)",
 		"varbinary|decimal",
 	)
-	tp := &fakePrimitive{
+	fp := &fakePrimitive{
 		results: []*sqltypes.Result{sqltypes.MakeTestResult(
 			fields,
 			"a|1",
@@ -46,10 +46,10 @@ func TestOrderedAggregateExecute(t *testing.T) {
 			Col:    1,
 		}},
 		Keys:  []int{0},
-		Input: tp,
+		Input: fp,
 	}
 
-	result, err := oa.Execute(nil, nil, nil, false)
+	result, err := oa.Execute(nil, nil, false)
 	if err != nil {
 		t.Error(err)
 	}
@@ -66,7 +66,7 @@ func TestOrderedAggregateExecute(t *testing.T) {
 }
 
 func TestOrderedAggregateExecuteTruncate(t *testing.T) {
-	tp := &fakePrimitive{
+	fp := &fakePrimitive{
 		results: []*sqltypes.Result{sqltypes.MakeTestResult(
 			sqltypes.MakeTestFields(
 				"col|count(*)|weight_string(col)",
@@ -87,10 +87,10 @@ func TestOrderedAggregateExecuteTruncate(t *testing.T) {
 		}},
 		Keys:                []int{2},
 		TruncateColumnCount: 2,
-		Input:               tp,
+		Input:               fp,
 	}
 
-	result, err := oa.Execute(nil, nil, nil, false)
+	result, err := oa.Execute(nil, nil, false)
 	if err != nil {
 		t.Error(err)
 	}
@@ -114,7 +114,7 @@ func TestOrderedAggregateStreamExecute(t *testing.T) {
 		"col|count(*)",
 		"varbinary|decimal",
 	)
-	tp := &fakePrimitive{
+	fp := &fakePrimitive{
 		results: []*sqltypes.Result{sqltypes.MakeTestResult(
 			fields,
 			"a|1",
@@ -131,11 +131,11 @@ func TestOrderedAggregateStreamExecute(t *testing.T) {
 			Col:    1,
 		}},
 		Keys:  []int{0},
-		Input: tp,
+		Input: fp,
 	}
 
 	var results []*sqltypes.Result
-	err := oa.StreamExecute(nil, nil, nil, false, func(qr *sqltypes.Result) error {
+	err := oa.StreamExecute(nil, nil, false, func(qr *sqltypes.Result) error {
 		results = append(results, qr)
 		return nil
 	})
@@ -157,7 +157,7 @@ func TestOrderedAggregateStreamExecute(t *testing.T) {
 }
 
 func TestOrderedAggregateStreamExecuteTruncate(t *testing.T) {
-	tp := &fakePrimitive{
+	fp := &fakePrimitive{
 		results: []*sqltypes.Result{sqltypes.MakeTestResult(
 			sqltypes.MakeTestFields(
 				"col|count(*)|weight_string(col)",
@@ -178,11 +178,11 @@ func TestOrderedAggregateStreamExecuteTruncate(t *testing.T) {
 		}},
 		Keys:                []int{2},
 		TruncateColumnCount: 2,
-		Input:               tp,
+		Input:               fp,
 	}
 
 	var results []*sqltypes.Result
-	err := oa.StreamExecute(nil, nil, nil, false, func(qr *sqltypes.Result) error {
+	err := oa.StreamExecute(nil, nil, false, func(qr *sqltypes.Result) error {
 		results = append(results, qr)
 		return nil
 	})
@@ -213,11 +213,11 @@ func TestOrderedAggregateGetFields(t *testing.T) {
 			"varbinary|decimal",
 		),
 	)
-	tp := &fakePrimitive{results: []*sqltypes.Result{result}}
+	fp := &fakePrimitive{results: []*sqltypes.Result{result}}
 
-	oa := &OrderedAggregate{Input: tp}
+	oa := &OrderedAggregate{Input: fp}
 
-	got, err := oa.GetFields(nil, nil, nil)
+	got, err := oa.GetFields(nil, nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -233,14 +233,14 @@ func TestOrderedAggregateGetFieldsTruncate(t *testing.T) {
 			"varchar|decimal|varbinary",
 		),
 	)
-	tp := &fakePrimitive{results: []*sqltypes.Result{result}}
+	fp := &fakePrimitive{results: []*sqltypes.Result{result}}
 
 	oa := &OrderedAggregate{
 		TruncateColumnCount: 2,
-		Input:               tp,
+		Input:               fp,
 	}
 
-	got, err := oa.GetFields(nil, nil, nil)
+	got, err := oa.GetFields(nil, nil)
 	if err != nil {
 		t.Error(err)
 	}
@@ -256,22 +256,22 @@ func TestOrderedAggregateGetFieldsTruncate(t *testing.T) {
 }
 
 func TestOrderedAggregateInputFail(t *testing.T) {
-	tp := &fakePrimitive{sendErr: errors.New("input fail")}
+	fp := &fakePrimitive{sendErr: errors.New("input fail")}
 
-	oa := &OrderedAggregate{Input: tp}
+	oa := &OrderedAggregate{Input: fp}
 
 	want := "input fail"
-	if _, err := oa.Execute(nil, nil, nil, false); err == nil || err.Error() != want {
+	if _, err := oa.Execute(nil, nil, false); err == nil || err.Error() != want {
 		t.Errorf("oa.Execute(): %v, want %s", err, want)
 	}
 
-	tp.rewind()
-	if err := oa.StreamExecute(nil, nil, nil, false, func(_ *sqltypes.Result) error { return nil }); err == nil || err.Error() != want {
+	fp.rewind()
+	if err := oa.StreamExecute(nil, nil, false, func(_ *sqltypes.Result) error { return nil }); err == nil || err.Error() != want {
 		t.Errorf("oa.StreamExecute(): %v, want %s", err, want)
 	}
 
-	tp.rewind()
-	if _, err := oa.GetFields(nil, nil, nil); err == nil || err.Error() != want {
+	fp.rewind()
+	if _, err := oa.GetFields(nil, nil); err == nil || err.Error() != want {
 		t.Errorf("oa.GetFields(): %v, want %s", err, want)
 	}
 }
@@ -281,7 +281,7 @@ func TestOrderedAggregateKeysFail(t *testing.T) {
 		"col|count(*)",
 		"varchar|decimal",
 	)
-	tp := &fakePrimitive{
+	fp := &fakePrimitive{
 		results: []*sqltypes.Result{sqltypes.MakeTestResult(
 			fields,
 			"a|1",
@@ -295,16 +295,16 @@ func TestOrderedAggregateKeysFail(t *testing.T) {
 			Col:    1,
 		}},
 		Keys:  []int{0},
-		Input: tp,
+		Input: fp,
 	}
 
 	want := "types are not comparable: VARCHAR vs VARCHAR"
-	if _, err := oa.Execute(nil, nil, nil, false); err == nil || err.Error() != want {
+	if _, err := oa.Execute(nil, nil, false); err == nil || err.Error() != want {
 		t.Errorf("oa.Execute(): %v, want %s", err, want)
 	}
 
-	tp.rewind()
-	if err := oa.StreamExecute(nil, nil, nil, false, func(_ *sqltypes.Result) error { return nil }); err == nil || err.Error() != want {
+	fp.rewind()
+	if err := oa.StreamExecute(nil, nil, false, func(_ *sqltypes.Result) error { return nil }); err == nil || err.Error() != want {
 		t.Errorf("oa.StreamExecute(): %v, want %s", err, want)
 	}
 }
@@ -314,7 +314,7 @@ func TestOrderedAggregateMergeFail(t *testing.T) {
 		"col|count(*)",
 		"varbinary|decimal",
 	)
-	tp := &fakePrimitive{
+	fp := &fakePrimitive{
 		results: []*sqltypes.Result{sqltypes.MakeTestResult(
 			fields,
 			"a|1",
@@ -328,16 +328,16 @@ func TestOrderedAggregateMergeFail(t *testing.T) {
 			Col:    1,
 		}},
 		Keys:  []int{0},
-		Input: tp,
+		Input: fp,
 	}
 
 	want := "could not parse value: 'b'"
-	if _, err := oa.Execute(nil, nil, nil, false); err == nil || err.Error() != want {
+	if _, err := oa.Execute(nil, nil, false); err == nil || err.Error() != want {
 		t.Errorf("oa.Execute(): %v, want %s", err, want)
 	}
 
-	tp.rewind()
-	if err := oa.StreamExecute(nil, nil, nil, false, func(_ *sqltypes.Result) error { return nil }); err == nil || err.Error() != want {
+	fp.rewind()
+	if err := oa.StreamExecute(nil, nil, false, func(_ *sqltypes.Result) error { return nil }); err == nil || err.Error() != want {
 		t.Errorf("oa.StreamExecute(): %v, want %s", err, want)
 	}
 }

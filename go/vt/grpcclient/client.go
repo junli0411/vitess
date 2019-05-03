@@ -19,13 +19,26 @@ limitations under the License.
 package grpcclient
 
 import (
+	"flag"
+
+	"github.com/grpc-ecosystem/go-grpc-middleware"
+	"github.com/grpc-ecosystem/go-grpc-prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
+	"vitess.io/vitess/go/trace"
 
-	"github.com/youtube/vitess/go/vt/grpccommon"
-	"github.com/youtube/vitess/go/vt/vttls"
+	"vitess.io/vitess/go/vt/grpccommon"
+	"vitess.io/vitess/go/vt/vttls"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/vt/log"
+)
+
+var (
+	keepaliveTime         = flag.Duration("grpc_keepalive_time", 0, "After a duration of this time if the client doesn't see any activity it pings the server to see if the transport is still alive.")
+	keepaliveTimeout      = flag.Duration("grpc_keepalive_timeout", 0, "After having pinged for keepalive check, the client waits for a duration of Timeout and if no activity is seen even after that the connection is closed.")
+	initialConnWindowSize = flag.Int("grpc_initial_conn_window_size", 0, "grpc initial connection window size")
+	initialWindowSize     = flag.Int("grpc_initial_window_size", 0, "grpc initial window size")
 )
 
 // FailFast is a self-documenting type for the grpc.FailFast.
@@ -51,6 +64,27 @@ func Dial(target string, failFast FailFast, opts ...grpc.DialOption) (*grpc.Clie
 			grpc.FailFast(bool(failFast)),
 		),
 	}
+
+	if *keepaliveTime != 0 || *keepaliveTimeout != 0 {
+		kp := keepalive.ClientParameters{
+			// After a duration of this time if the client doesn't see any activity it pings the server to see if the transport is still alive.
+			Time: *keepaliveTime,
+			// After having pinged for keepalive check, the client waits for a duration of Timeout and if no activity is seen even after that
+			// the connection is closed. (This will eagerly fail inflight grpc requests even if they don't have timeouts.)
+			Timeout:             *keepaliveTimeout,
+			PermitWithoutStream: true,
+		}
+		newopts = append(newopts, grpc.WithKeepaliveParams(kp))
+	}
+
+	if *initialConnWindowSize != 0 {
+		newopts = append(newopts, grpc.WithInitialConnWindowSize(int32(*initialConnWindowSize)))
+	}
+
+	if *initialWindowSize != 0 {
+		newopts = append(newopts, grpc.WithInitialWindowSize(int32(*initialWindowSize)))
+	}
+
 	newopts = append(newopts, opts...)
 	var err error
 	for _, grpcDialOptionInitializer := range grpcDialOptions {
@@ -59,7 +93,19 @@ func Dial(target string, failFast FailFast, opts ...grpc.DialOption) (*grpc.Clie
 			log.Fatalf("There was an error initializing client grpc.DialOption: %v", err)
 		}
 	}
+
+	newopts = append(newopts, interceptors()...)
+
 	return grpc.Dial(target, newopts...)
+}
+
+func interceptors() []grpc.DialOption {
+	builder := &clientInterceptorBuilder{}
+	if *grpccommon.EnableGRPCPrometheus {
+		builder.Add(grpc_prometheus.StreamClientInterceptor, grpc_prometheus.UnaryClientInterceptor)
+	}
+	trace.AddGrpcClientOptions(builder.Add)
+	return builder.Build()
 }
 
 // SecureDialOption returns the gRPC dial option to use for the
@@ -80,4 +126,29 @@ func SecureDialOption(cert, key, ca, name string) (grpc.DialOption, error) {
 	// Create the creds server options.
 	creds := credentials.NewTLS(config)
 	return grpc.WithTransportCredentials(creds), nil
+}
+
+// Allows for building a chain of interceptors without knowing the total size up front
+type clientInterceptorBuilder struct {
+	unaryInterceptors  []grpc.UnaryClientInterceptor
+	streamInterceptors []grpc.StreamClientInterceptor
+}
+
+// Add adds interceptors to the chain of interceptors
+func (collector *clientInterceptorBuilder) Add(s grpc.StreamClientInterceptor, u grpc.UnaryClientInterceptor) {
+	collector.unaryInterceptors = append(collector.unaryInterceptors, u)
+	collector.streamInterceptors = append(collector.streamInterceptors, s)
+}
+
+// Build returns DialOptions to add to the grpc.Dial call
+func (collector *clientInterceptorBuilder) Build() []grpc.DialOption {
+	switch len(collector.unaryInterceptors) + len(collector.streamInterceptors) {
+	case 0:
+		return []grpc.DialOption{}
+	default:
+		return []grpc.DialOption{
+			grpc.WithUnaryInterceptor(grpc_middleware.ChainUnaryClient(collector.unaryInterceptors...)),
+			grpc.WithStreamInterceptor(grpc_middleware.ChainStreamClient(collector.streamInterceptors...)),
+		}
+	}
 }

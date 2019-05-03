@@ -20,8 +20,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/key"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 func TestLookupHashUniqueNew(t *testing.T) {
@@ -30,7 +31,7 @@ func TestLookupHashUniqueNew(t *testing.T) {
 		t.Errorf("Create(lookup, false): %v, want %v", got, want)
 	}
 
-	l, err := CreateVindex("lookup_hash_unique", "lookup_hash_unique", map[string]string{
+	l, _ = CreateVindex("lookup_hash_unique", "lookup_hash_unique", map[string]string{
 		"table":      "t",
 		"from":       "fromc",
 		"to":         "toc",
@@ -40,7 +41,7 @@ func TestLookupHashUniqueNew(t *testing.T) {
 		t.Errorf("Create(lookup, false): %v, want %v", got, want)
 	}
 
-	_, err = CreateVindex("lookup_hash_unique", "lookup_hash_unique", map[string]string{
+	_, err := CreateVindex("lookup_hash_unique", "lookup_hash_unique", map[string]string{
 		"table":      "t",
 		"from":       "fromc",
 		"to":         "toc",
@@ -63,30 +64,33 @@ func TestLookupHashUniqueMap(t *testing.T) {
 	lhu := createLookup(t, "lookup_hash_unique", false)
 	vc := &vcursor{numRows: 1}
 
-	got, err := lhu.(Unique).Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
+	got, err := lhu.Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
 	if err != nil {
 		t.Error(err)
 	}
-	want := []KsidOrRange{
-		{ID: []byte("\x16k@\xb4J\xbaK\xd6")},
-		{ID: []byte("\x16k@\xb4J\xbaK\xd6")},
+	want := []key.Destination{
+		key.DestinationKeyspaceID([]byte("\x16k@\xb4J\xbaK\xd6")),
+		key.DestinationKeyspaceID([]byte("\x16k@\xb4J\xbaK\xd6")),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Map(): %#v, want %+v", got, want)
 	}
 
 	vc.numRows = 0
-	got, err = lhu.(Unique).Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
+	got, err = lhu.Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
 	if err != nil {
 		t.Error(err)
 	}
-	want = []KsidOrRange{{}, {}}
+	want = []key.Destination{
+		key.DestinationNone{},
+		key.DestinationNone{},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Map(): %#v, want %+v", got, want)
 	}
 
 	vc.numRows = 2
-	_, err = lhu.(Unique).Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
+	_, err = lhu.Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
 	wantErr := "LookupHash.Map: unexpected multiple results from vindex t: INT64(1)"
 	if err == nil || err.Error() != wantErr {
 		t.Errorf("lhu(query fail) err: %v, want %s", err, wantErr)
@@ -97,18 +101,20 @@ func TestLookupHashUniqueMap(t *testing.T) {
 		sqltypes.MakeTestFields("a", "varbinary"),
 		"notint",
 	)
-	got, err = lhu.(Unique).Map(vc, []sqltypes.Value{sqltypes.NewInt64(1)})
+	got, err = lhu.Map(vc, []sqltypes.Value{sqltypes.NewInt64(1)})
 	if err != nil {
 		t.Error(err)
 	}
-	want = []KsidOrRange{{}}
+	want = []key.Destination{
+		key.DestinationNone{},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Map(): %#v, want %+v", got, want)
 	}
 
 	// Test query fail.
 	vc.mustFail = true
-	_, err = lhu.(Unique).Map(vc, []sqltypes.Value{sqltypes.NewInt64(1)})
+	_, err = lhu.Map(vc, []sqltypes.Value{sqltypes.NewInt64(1)})
 	wantErr = "lookup.Map: execute failed"
 	if err == nil || err.Error() != wantErr {
 		t.Errorf("lhu(query fail) err: %v, want %s", err, wantErr)
@@ -120,15 +126,18 @@ func TestLookupHashUniqueMapWriteOnly(t *testing.T) {
 	lhu := createLookup(t, "lookup_hash_unique", true)
 	vc := &vcursor{numRows: 0}
 
-	got, err := lhu.(Unique).Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
+	got, err := lhu.Map(vc, []sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)})
 	if err != nil {
 		t.Error(err)
 	}
-	want := []KsidOrRange{{
-		Range: &topodatapb.KeyRange{},
-	}, {
-		Range: &topodatapb.KeyRange{},
-	}}
+	want := []key.Destination{
+		key.DestinationKeyRange{
+			KeyRange: &topodatapb.KeyRange{},
+		},
+		key.DestinationKeyRange{
+			KeyRange: &topodatapb.KeyRange{},
+		},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Map(): %#v, want %+v", got, want)
 	}

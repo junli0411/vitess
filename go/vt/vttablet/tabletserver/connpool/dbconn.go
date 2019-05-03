@@ -22,20 +22,22 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/vt/vterrors"
+
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/sync2"
-	"github.com/youtube/vitess/go/trace"
-	"github.com/youtube/vitess/go/vt/dbconnpool"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/sync2"
+	"vitess.io/vitess/go/trace"
+	"vitess.io/vitess/go/vt/dbconnpool"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
-// BinlogFormat is used for for specifying the binlog format.
+// BinlogFormat is used for specifying the binlog format.
 type BinlogFormat int
 
 // The following constants specify the possible binlog format values.
@@ -92,8 +94,7 @@ func NewDBConnNoPool(params *mysql.ConnParams, dbaPool *dbconnpool.ConnectionPoo
 // Exec executes the specified query. If there is a connection error, it will reconnect
 // and retry. A failed reconnect will trigger a CheckMySQL.
 func (dbc *DBConn) Exec(ctx context.Context, query string, maxrows int, wantfields bool) (*sqltypes.Result, error) {
-	span := trace.NewSpanFromContext(ctx)
-	span.StartClient("DBConn.Exec")
+	span, ctx := trace.NewSpan(ctx, "DBConn.Exec")
 	defer span.Finish()
 
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -132,6 +133,14 @@ func (dbc *DBConn) execOnce(ctx context.Context, query string, maxrows int, want
 	dbc.current.Set(query)
 	defer dbc.current.Set("")
 
+	// Check if the context is already past its deadline before
+	// trying to execute the query.
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%v before execution started", ctx.Err())
+	default:
+	}
+
 	done, wg := dbc.setDeadline(ctx)
 	if done != nil {
 		defer func() {
@@ -151,8 +160,8 @@ func (dbc *DBConn) ExecOnce(ctx context.Context, query string, maxrows int, want
 
 // Stream executes the query and streams the results.
 func (dbc *DBConn) Stream(ctx context.Context, query string, callback func(*sqltypes.Result) error, streamBufferSize int, includedFields querypb.ExecuteOptions_IncludedFields) error {
-	span := trace.NewSpanFromContext(ctx)
-	span.StartClient("DBConn.Stream")
+	span, ctx := trace.NewSpan(ctx, "DBConn.Stream")
+	trace.AnnotateSQL(span, query)
 	defer span.Finish()
 
 	resultSent := false
@@ -221,24 +230,25 @@ var (
 )
 
 // VerifyMode is a helper method to verify mysql is running with
-// sql_mode = STRICT_TRANS_TABLES and autocommit=ON. It also returns
-// the current binlog format.
+// sql_mode = STRICT_TRANS_TABLES or STRICT_ALL_TABLES and autocommit=ON.
+// It also returns the current binlog format.
 func (dbc *DBConn) VerifyMode(strictTransTables bool) (BinlogFormat, error) {
 	if strictTransTables {
 		qr, err := dbc.conn.ExecuteFetch(getModeSQL, 2, false)
 		if err != nil {
-			return 0, fmt.Errorf("could not verify mode: %v", err)
+			return 0, vterrors.Wrap(err, "could not verify mode")
 		}
 		if len(qr.Rows) != 1 {
 			return 0, fmt.Errorf("incorrect rowcount received for %s: %d", getModeSQL, len(qr.Rows))
 		}
-		if !strings.Contains(qr.Rows[0][0].ToString(), "STRICT_TRANS_TABLES") {
-			return 0, fmt.Errorf("require sql_mode to be STRICT_TRANS_TABLES: got '%s'", qr.Rows[0][0].ToString())
+		sqlMode := qr.Rows[0][0].ToString()
+		if !(strings.Contains(sqlMode, "STRICT_TRANS_TABLES") || strings.Contains(sqlMode, "STRICT_ALL_TABLES")) {
+			return 0, fmt.Errorf("require sql_mode to be STRICT_TRANS_TABLES or STRICT_ALL_TABLES: got '%s'", qr.Rows[0][0].ToString())
 		}
 	}
 	qr, err := dbc.conn.ExecuteFetch(getAutocommit, 2, false)
 	if err != nil {
-		return 0, fmt.Errorf("could not verify mode: %v", err)
+		return 0, vterrors.Wrap(err, "could not verify mode")
 	}
 	if len(qr.Rows) != 1 {
 		return 0, fmt.Errorf("incorrect rowcount received for %s: %d", getAutocommit, len(qr.Rows))
@@ -248,7 +258,7 @@ func (dbc *DBConn) VerifyMode(strictTransTables bool) (BinlogFormat, error) {
 	}
 	qr, err = dbc.conn.ExecuteFetch(getAutoIsNull, 2, false)
 	if err != nil {
-		return 0, fmt.Errorf("could not verify mode: %v", err)
+		return 0, vterrors.Wrap(err, "could not verify mode")
 	}
 	if len(qr.Rows) != 1 {
 		return 0, fmt.Errorf("incorrect rowcount received for %s: %d", getAutoIsNull, len(qr.Rows))
@@ -258,7 +268,7 @@ func (dbc *DBConn) VerifyMode(strictTransTables bool) (BinlogFormat, error) {
 	}
 	qr, err = dbc.conn.ExecuteFetch(showBinlog, 10, false)
 	if err != nil {
-		return 0, fmt.Errorf("could not fetch binlog format: %v", err)
+		return 0, vterrors.Wrap(err, "could not fetch binlog format")
 	}
 	if len(qr.Rows) != 1 {
 		return 0, fmt.Errorf("incorrect rowcount received for %s: %d", showBinlog, len(qr.Rows))
@@ -304,7 +314,7 @@ func (dbc *DBConn) Recycle() {
 // Kill will also not kill a query more than once.
 func (dbc *DBConn) Kill(reason string, elapsed time.Duration) error {
 	tabletenv.KillStats.Add("Queries", 1)
-	log.Infof("Due to %s, elapsed time: %v, killing query %s", reason, elapsed, dbc.Current())
+	log.Infof("Due to %s, elapsed time: %v, killing query ID %v %s", reason, elapsed, dbc.conn.ID(), dbc.Current())
 	killConn, err := dbc.dbaPool.Get(context.TODO())
 	if err != nil {
 		log.Warningf("Failed to get conn from dba pool: %v", err)
@@ -314,7 +324,7 @@ func (dbc *DBConn) Kill(reason string, elapsed time.Duration) error {
 	sql := fmt.Sprintf("kill %d", dbc.conn.ID())
 	_, err = killConn.ExecuteFetch(sql, 10000, false)
 	if err != nil {
-		log.Errorf("Could not kill query %s: %v", dbc.Current(), err)
+		log.Errorf("Could not kill query ID %v %s: %v", dbc.conn.ID(), dbc.Current(), err)
 		return err
 	}
 	return nil
@@ -360,7 +370,7 @@ func (dbc *DBConn) setDeadline(ctx context.Context) (chan bool, *sync.WaitGroup)
 		case <-done:
 			return
 		}
-		elapsed := time.Now().Sub(startTime)
+		elapsed := time.Since(startTime)
 
 		// Give 2x the elapsed time and some buffer as grace period
 		// for the query to get killed.

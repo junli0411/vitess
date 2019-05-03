@@ -20,17 +20,19 @@ import (
 	"flag"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/trace"
 
-	"github.com/youtube/vitess/go/flagutil"
-	"github.com/youtube/vitess/go/vt/schemamanager/schemaswap"
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/vtctl"
-	"github.com/youtube/vitess/go/vt/workflow"
-	"github.com/youtube/vitess/go/vt/workflow/resharding"
-	"github.com/youtube/vitess/go/vt/workflow/topovalidator"
+	"vitess.io/vitess/go/flagutil"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/schemamanager/schemaswap"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/vtctl"
+	"vitess.io/vitess/go/vt/workflow"
+	"vitess.io/vitess/go/vt/workflow/resharding"
+	"vitess.io/vitess/go/vt/workflow/reshardingworkflowgen"
+	"vitess.io/vitess/go/vt/workflow/topovalidator"
 )
 
 var (
@@ -58,6 +60,9 @@ func initWorkflowManager(ts *topo.Server) {
 
 		// Register the Horizontal Resharding workflow.
 		resharding.Register()
+
+		// Register workflow that generates Horizontal Resharding workflows.
+		reshardingworkflowgen.Register()
 
 		// Unregister the blacklisted workflows.
 		for _, name := range workflowManagerDisable {
@@ -95,7 +100,9 @@ func runWorkflowManagerElection(ts *topo.Server) {
 	// We use servenv.ListeningURL which is only populated during Run,
 	// so we have to start this with OnRun.
 	servenv.OnRun(func() {
-		ctx := context.Background()
+		span, ctx := trace.NewSpan(context.Background(), "WorkflowManagerElection")
+		defer span.Finish()
+
 		conn, err := ts.ConnForCell(ctx, topo.GlobalCell)
 		if err != nil {
 			log.Errorf("Cannot get global cell topo connection, disabling workflow manager: %v", err)
@@ -118,10 +125,10 @@ func runWorkflowManagerElection(ts *topo.Server) {
 		go func() {
 			for {
 				ctx, err := mp.WaitForMastership()
-				switch err {
-				case nil:
+				switch {
+				case err == nil:
 					vtctl.WorkflowManager.Run(ctx)
-				case topo.ErrInterrupted:
+				case topo.IsErrType(err, topo.Interrupted):
 					return
 				default:
 					log.Errorf("Got error while waiting for master, will retry in 5s: %v", err)

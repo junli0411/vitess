@@ -21,20 +21,21 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/vt/vterrors"
+
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/hack"
-	"github.com/youtube/vitess/go/sqlescape"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/timer"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/connpool"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/sqlescape"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/timer"
+	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/connpool"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 const (
@@ -48,7 +49,7 @@ const (
 // table against the current time at read time. This value is reported in metrics and
 // also to the healthchecks.
 type Reader struct {
-	dbconfigs dbconfigs.DBConfigs
+	dbconfigs *dbconfigs.DBConfigs
 
 	enabled       bool
 	interval      time.Duration
@@ -84,7 +85,7 @@ func NewReader(checker connpool.MySQLChecker, config tabletenv.TabletConfig) *Re
 }
 
 // InitDBConfig must be called before Init.
-func (r *Reader) InitDBConfig(dbcfgs dbconfigs.DBConfigs) {
+func (r *Reader) InitDBConfig(dbcfgs *dbconfigs.DBConfigs) {
 	r.dbconfigs = dbcfgs
 }
 
@@ -94,7 +95,7 @@ func (r *Reader) Init(target querypb.Target) {
 	if !r.enabled {
 		return
 	}
-	r.dbName = sqlescape.EscapeID(r.dbconfigs.SidecarDBName)
+	r.dbName = sqlescape.EscapeID(r.dbconfigs.SidecarDBName.Get())
 	r.keyspaceShard = fmt.Sprintf("%s:%s", target.Keyspace, target.Shard)
 }
 
@@ -111,7 +112,7 @@ func (r *Reader) Open() {
 	}
 
 	log.Info("Beginning heartbeat reads")
-	r.pool.Open(&r.dbconfigs.App, &r.dbconfigs.Dba, &r.dbconfigs.AppDebug)
+	r.pool.Open(r.dbconfigs.AppWithDB(), r.dbconfigs.DbaWithDB(), r.dbconfigs.AppDebugWithDB())
 	r.ticks.Start(func() { r.readHeartbeat() })
 	r.isOpen = true
 }
@@ -153,12 +154,12 @@ func (r *Reader) readHeartbeat() {
 
 	res, err := r.fetchMostRecentHeartbeat(ctx)
 	if err != nil {
-		r.recordError(fmt.Errorf("Failed to read most recent heartbeat: %v", err))
+		r.recordError(vterrors.Wrap(err, "Failed to read most recent heartbeat"))
 		return
 	}
 	ts, err := parseHeartbeatResult(res)
 	if err != nil {
-		r.recordError(fmt.Errorf("Failed to parse heartbeat result: %v", err))
+		r.recordError(vterrors.Wrap(err, "Failed to parse heartbeat result"))
 		return
 	}
 
@@ -200,13 +201,13 @@ func (r *Reader) bindHeartbeatFetch() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return hack.String(bound), nil
+	return bound, nil
 }
 
 // parseHeartbeatResult turns a raw result into the timestamp for processing.
 func parseHeartbeatResult(res *sqltypes.Result) (int64, error) {
 	if len(res.Rows) != 1 {
-		return 0, fmt.Errorf("Failed to read heartbeat: writer query did not result in 1 row. Got %v", len(res.Rows))
+		return 0, fmt.Errorf("failed to read heartbeat: writer query did not result in 1 row. Got %v", len(res.Rows))
 	}
 	ts, err := sqltypes.ToInt64(res.Rows[0][0])
 	if err != nil {
@@ -224,4 +225,8 @@ func (r *Reader) recordError(err error) {
 	r.lagMu.Unlock()
 	r.errorLog.Errorf("%v", err)
 	readErrors.Add(1)
+}
+
+func (r *Reader) IsOpen() bool {
+	return r.isOpen
 }

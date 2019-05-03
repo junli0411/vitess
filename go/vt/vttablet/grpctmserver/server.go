@@ -22,17 +22,17 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 
-	"github.com/youtube/vitess/go/vt/callinfo"
-	"github.com/youtube/vitess/go/vt/hook"
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/mysqlctl/tmutils"
-	"github.com/youtube/vitess/go/vt/servenv"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletmanager"
+	"vitess.io/vitess/go/vt/callinfo"
+	"vitess.io/vitess/go/vt/hook"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/mysqlctl/tmutils"
+	"vitess.io/vitess/go/vt/servenv"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletmanager"
 
-	logutilpb "github.com/youtube/vitess/go/vt/proto/logutil"
-	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
-	tabletmanagerservicepb "github.com/youtube/vitess/go/vt/proto/tabletmanagerservice"
+	logutilpb "vitess.io/vitess/go/vt/proto/logutil"
+	tabletmanagerdatapb "vitess.io/vitess/go/vt/proto/tabletmanagerdata"
+	tabletmanagerservicepb "vitess.io/vitess/go/vt/proto/tabletmanagerservice"
 )
 
 // server is the gRPC implementation of the RPC server
@@ -178,6 +178,22 @@ func (s *server) ApplySchema(ctx context.Context, request *tabletmanagerdatapb.A
 	return response, err
 }
 
+func (s *server) LockTables(ctx context.Context, req *tabletmanagerdatapb.LockTablesRequest) (*tabletmanagerdatapb.LockTablesResponse, error) {
+	err := s.agent.LockTables(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &tabletmanagerdatapb.LockTablesResponse{}, nil
+}
+
+func (s *server) UnlockTables(ctx context.Context, req *tabletmanagerdatapb.UnlockTablesRequest) (*tabletmanagerdatapb.UnlockTablesResponse, error) {
+	err := s.agent.UnlockTables(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &tabletmanagerdatapb.UnlockTablesResponse{}, nil
+}
+
 func (s *server) ExecuteFetchAsDba(ctx context.Context, request *tabletmanagerdatapb.ExecuteFetchAsDbaRequest) (response *tabletmanagerdatapb.ExecuteFetchAsDbaResponse, err error) {
 	defer s.agent.HandleRPCPanic(ctx, "ExecuteFetchAsDba", request, response, false /*verbose*/, &err)
 	ctx = callinfo.GRPCCallInfo(ctx)
@@ -265,6 +281,13 @@ func (s *server) StartSlave(ctx context.Context, request *tabletmanagerdatapb.St
 	return response, s.agent.StartSlave(ctx)
 }
 
+func (s *server) StartSlaveUntilAfter(ctx context.Context, request *tabletmanagerdatapb.StartSlaveUntilAfterRequest) (response *tabletmanagerdatapb.StartSlaveUntilAfterResponse, err error) {
+	defer s.agent.HandleRPCPanic(ctx, "StartSlave", request, response, true /*verbose*/, &err)
+	ctx = callinfo.GRPCCallInfo(ctx)
+	response = &tabletmanagerdatapb.StartSlaveUntilAfterResponse{}
+	return response, s.agent.StartSlaveUntilAfter(ctx, request.Position, time.Duration(request.WaitTimeout))
+}
+
 func (s *server) TabletExternallyReparented(ctx context.Context, request *tabletmanagerdatapb.TabletExternallyReparentedRequest) (response *tabletmanagerdatapb.TabletExternallyReparentedResponse, err error) {
 	defer s.agent.HandleRPCPanic(ctx, "TabletExternallyReparented", request, response, false /*verbose*/, &err)
 	ctx = callinfo.GRPCCallInfo(ctx)
@@ -287,40 +310,19 @@ func (s *server) GetSlaves(ctx context.Context, request *tabletmanagerdatapb.Get
 	return response, err
 }
 
-func (s *server) WaitBlpPosition(ctx context.Context, request *tabletmanagerdatapb.WaitBlpPositionRequest) (response *tabletmanagerdatapb.WaitBlpPositionResponse, err error) {
-	defer s.agent.HandleRPCPanic(ctx, "WaitBlpPosition", request, response, true /*verbose*/, &err)
+func (s *server) VReplicationExec(ctx context.Context, request *tabletmanagerdatapb.VReplicationExecRequest) (response *tabletmanagerdatapb.VReplicationExecResponse, err error) {
+	defer s.agent.HandleRPCPanic(ctx, "VReplicationExec", request, response, true /*verbose*/, &err)
 	ctx = callinfo.GRPCCallInfo(ctx)
-	response = &tabletmanagerdatapb.WaitBlpPositionResponse{}
-	return response, s.agent.WaitBlpPosition(ctx, request.BlpPosition, time.Duration(request.WaitTimeout))
-}
-
-func (s *server) StopBlp(ctx context.Context, request *tabletmanagerdatapb.StopBlpRequest) (response *tabletmanagerdatapb.StopBlpResponse, err error) {
-	defer s.agent.HandleRPCPanic(ctx, "StopBlp", request, response, true /*verbose*/, &err)
-	ctx = callinfo.GRPCCallInfo(ctx)
-	response = &tabletmanagerdatapb.StopBlpResponse{}
-	positions, err := s.agent.StopBlp(ctx)
-	if err == nil {
-		response.BlpPositions = positions
-	}
+	response = &tabletmanagerdatapb.VReplicationExecResponse{}
+	response.Result, err = s.agent.VReplicationExec(ctx, request.Query)
 	return response, err
 }
 
-func (s *server) StartBlp(ctx context.Context, request *tabletmanagerdatapb.StartBlpRequest) (response *tabletmanagerdatapb.StartBlpResponse, err error) {
-	defer s.agent.HandleRPCPanic(ctx, "StartBlp", request, response, true /*verbose*/, &err)
+func (s *server) VReplicationWaitForPos(ctx context.Context, request *tabletmanagerdatapb.VReplicationWaitForPosRequest) (response *tabletmanagerdatapb.VReplicationWaitForPosResponse, err error) {
+	defer s.agent.HandleRPCPanic(ctx, "VReplicationWaitForPos", request, response, true /*verbose*/, &err)
 	ctx = callinfo.GRPCCallInfo(ctx)
-	response = &tabletmanagerdatapb.StartBlpResponse{}
-	return response, s.agent.StartBlp(ctx)
-}
-
-func (s *server) RunBlpUntil(ctx context.Context, request *tabletmanagerdatapb.RunBlpUntilRequest) (response *tabletmanagerdatapb.RunBlpUntilResponse, err error) {
-	defer s.agent.HandleRPCPanic(ctx, "RunBlpUntil", request, response, true /*verbose*/, &err)
-	ctx = callinfo.GRPCCallInfo(ctx)
-	response = &tabletmanagerdatapb.RunBlpUntilResponse{}
-	position, err := s.agent.RunBlpUntil(ctx, request.BlpPositions, time.Duration(request.WaitTimeout))
-	if err == nil {
-		response.Position = position
-	}
-	return response, err
+	err = s.agent.VReplicationWaitForPos(ctx, int(request.Id), request.Position)
+	return &tabletmanagerdatapb.VReplicationWaitForPosResponse{}, err
 }
 
 //
@@ -367,6 +369,14 @@ func (s *server) DemoteMaster(ctx context.Context, request *tabletmanagerdatapb.
 	if err == nil {
 		response.Position = position
 	}
+	return response, err
+}
+
+func (s *server) UndoDemoteMaster(ctx context.Context, request *tabletmanagerdatapb.UndoDemoteMasterRequest) (response *tabletmanagerdatapb.UndoDemoteMasterResponse, err error) {
+	defer s.agent.HandleRPCPanic(ctx, "UndoDemoteMaster", request, response, true /*verbose*/, &err)
+	ctx = callinfo.GRPCCallInfo(ctx)
+	response = &tabletmanagerdatapb.UndoDemoteMasterResponse{}
+	err = s.agent.UndoDemoteMaster(ctx)
 	return response, err
 }
 
@@ -439,7 +449,7 @@ func (s *server) Backup(request *tabletmanagerdatapb.BackupRequest, stream table
 		})
 	})
 
-	return s.agent.Backup(ctx, int(request.Concurrency), logger)
+	return s.agent.Backup(ctx, int(request.Concurrency), logger, bool(request.AllowMaster))
 }
 
 func (s *server) RestoreFromBackup(request *tabletmanagerdatapb.RestoreFromBackupRequest, stream tabletmanagerservicepb.TabletManager_RestoreFromBackupServer) (err error) {

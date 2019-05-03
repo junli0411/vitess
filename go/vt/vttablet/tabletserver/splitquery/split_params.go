@@ -19,12 +19,12 @@ package splitquery
 import (
 	"fmt"
 
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 // SplitParams stores the context for a splitquery computation. It is used by
@@ -174,7 +174,7 @@ func newSplitParams(
 			" (must be a simple table expression): %v", query.Sql)
 	}
 	tableSchema, ok := schemaMap[tableName.String()]
-	if tableSchema == nil {
+	if !ok || tableSchema == nil {
 		return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "can't find table in schema")
 	}
 

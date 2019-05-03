@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/youtube/vitess/go/sync2"
+	"vitess.io/vitess/go/sync2"
 )
 
 // Timings is meant to tracks timing data
@@ -37,20 +37,27 @@ type Timings struct {
 	mu         sync.RWMutex
 	histograms map[string]*Histogram
 	hook       func(string, time.Duration)
+	help       string
+	label      string
 }
 
 // NewTimings creates a new Timings object, and publishes it if name is set.
 // categories is an optional list of categories to initialize to 0.
 // Categories that aren't initialized will be missing from the map until the
 // first time they are updated.
-func NewTimings(name string, categories ...string) *Timings {
-	t := &Timings{histograms: make(map[string]*Histogram)}
+func NewTimings(name, help, label string, categories ...string) *Timings {
+	t := &Timings{
+		histograms: make(map[string]*Histogram),
+		help:       help,
+		label:      label,
+	}
 	for _, cat := range categories {
-		t.histograms[cat] = NewGenericHistogram("", bucketCutoffs, bucketLabels, "Count", "Time")
+		t.histograms[cat] = NewGenericHistogram("", "", bucketCutoffs, bucketLabels, "Count", "Time")
 	}
 	if name != "" {
 		publish(name, t)
 	}
+
 	return t
 }
 
@@ -67,7 +74,7 @@ func (t *Timings) Add(name string, elapsed time.Duration) {
 		t.mu.Lock()
 		hist, ok = t.histograms[name]
 		if !ok {
-			hist = NewGenericHistogram("", bucketCutoffs, bucketLabels, "Count", "Time")
+			hist = NewGenericHistogram("", "", bucketCutoffs, bucketLabels, "Count", "Time")
 			t.histograms[name] = hist
 		}
 		t.mu.Unlock()
@@ -85,7 +92,7 @@ func (t *Timings) Add(name string, elapsed time.Duration) {
 // Record is a convenience function that records completion
 // timing data based on the provided start time of an event.
 func (t *Timings) Record(name string, startTime time.Time) {
-	t.Add(name, time.Now().Sub(startTime))
+	t.Add(name, time.Since(startTime))
 }
 
 // String is for expvar.
@@ -150,6 +157,16 @@ func (t *Timings) Cutoffs() []int64 {
 	return bucketCutoffs
 }
 
+// Help returns the help string.
+func (t *Timings) Help() string {
+	return t.help
+}
+
+// Label returns the label name.
+func (t *Timings) Label() string {
+	return t.label
+}
+
 var bucketCutoffs = []int64{5e5, 1e6, 5e6, 1e7, 5e7, 1e8, 5e8, 1e9, 5e9, 1e10}
 
 var bucketLabels []string
@@ -171,14 +188,18 @@ type MultiTimings struct {
 }
 
 // NewMultiTimings creates a new MultiTimings object.
-func NewMultiTimings(name string, labels []string) *MultiTimings {
+func NewMultiTimings(name string, help string, labels []string) *MultiTimings {
 	t := &MultiTimings{
-		Timings: Timings{histograms: make(map[string]*Histogram)},
-		labels:  labels,
+		Timings: Timings{
+			histograms: make(map[string]*Histogram),
+			help:       help,
+		},
+		labels: labels,
 	}
 	if name != "" {
 		publish(name, t)
 	}
+
 	return t
 }
 
@@ -187,12 +208,23 @@ func (mt *MultiTimings) Labels() []string {
 	return mt.labels
 }
 
+// safeJoinLabels joins the label values with ".", but first replaces any existing
+// "." characters in the labels with the proper replacement, to avoid issues parsing
+// them apart later.
+func safeJoinLabels(labels []string) string {
+	sanitizedLabels := make([]string, len(labels))
+	for idx, label := range labels {
+		sanitizedLabels[idx] = safeLabel(label)
+	}
+	return strings.Join(sanitizedLabels, ".")
+}
+
 // Add will add a new value to the named histogram.
 func (mt *MultiTimings) Add(names []string, elapsed time.Duration) {
 	if len(names) != len(mt.labels) {
 		panic("MultiTimings: wrong number of values in Add")
 	}
-	mt.Timings.Add(strings.Join(names, "."), elapsed)
+	mt.Timings.Add(safeJoinLabels(names), elapsed)
 }
 
 // Record is a convenience function that records completion
@@ -201,7 +233,7 @@ func (mt *MultiTimings) Record(names []string, startTime time.Time) {
 	if len(names) != len(mt.labels) {
 		panic("MultiTimings: wrong number of values in Record")
 	}
-	mt.Timings.Record(strings.Join(names, "."), startTime)
+	mt.Timings.Record(safeJoinLabels(names), startTime)
 }
 
 // Cutoffs returns the cutoffs used in the component histograms.

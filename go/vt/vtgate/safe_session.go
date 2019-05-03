@@ -20,11 +20,12 @@ import (
 	"sync"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/youtube/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	vtgatepb "github.com/youtube/vitess/go/vt/proto/vtgate"
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vtgatepb "vitess.io/vitess/go/vt/proto/vtgate"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 // SafeSession is a mutex-protected version of the Session.
@@ -95,7 +96,7 @@ func (session *SafeSession) SetAutocommitable(flag bool) {
 }
 
 // AutocommitApproval returns true if we can perform a single round-trip
-// autocommit. If so, the caller is responsible for commiting their
+// autocommit. If so, the caller is responsible for committing their
 // transaction.
 func (session *SafeSession) AutocommitApproval() bool {
 	session.mu.Lock()
@@ -180,6 +181,20 @@ func (session *SafeSession) MustRollback() bool {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	return session.mustRollback
+}
+
+// RecordWarning stores the given warning in the session
+func (session *SafeSession) RecordWarning(warning *querypb.QueryWarning) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.Session.Warnings = append(session.Session.Warnings, warning)
+}
+
+// ClearWarnings removes all the warnings from the session
+func (session *SafeSession) ClearWarnings() {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.Session.Warnings = nil
 }
 
 // Reset clears the session

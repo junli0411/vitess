@@ -22,16 +22,18 @@ import (
 	"sync"
 
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	log "github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
-	"github.com/youtube/vitess/go/event"
-	"github.com/youtube/vitess/go/netutil"
-	"github.com/youtube/vitess/go/trace"
+	"vitess.io/vitess/go/event"
+	"vitess.io/vitess/go/netutil"
+	"vitess.io/vitess/go/trace"
+	"vitess.io/vitess/go/vt/log"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
-	"github.com/youtube/vitess/go/vt/topo/events"
-	"github.com/youtube/vitess/go/vt/topo/topoproto"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/vt/topo/events"
+	"vitess.io/vitess/go/vt/topo/topoproto"
 )
 
 // IsTrivialTypeChange returns if this db type be trivially reassigned
@@ -220,8 +222,7 @@ func (ts *Server) GetTablet(ctx context.Context, alias *topodatapb.TabletAlias) 
 		return nil, err
 	}
 
-	span := trace.NewSpanFromContext(ctx)
-	span.StartClient("TopoServer.GetTablet")
+	span, ctx := trace.NewSpan(ctx, "TopoServer.GetTablet")
 	span.Annotate("tablet", topoproto.TabletAliasString(alias))
 	defer span.Finish()
 
@@ -249,8 +250,7 @@ func (ts *Server) UpdateTablet(ctx context.Context, ti *TabletInfo) error {
 		return err
 	}
 
-	span := trace.NewSpanFromContext(ctx)
-	span.StartClient("TopoServer.UpdateTablet")
+	span, ctx := trace.NewSpan(ctx, "TopoServer.UpdateTablet")
 	span.Annotate("tablet", topoproto.TabletAliasString(ti.Alias))
 	defer span.Finish()
 
@@ -279,8 +279,7 @@ func (ts *Server) UpdateTablet(ctx context.Context, ti *TabletInfo) error {
 // If the update method returns ErrNoUpdateNeeded, nothing is written,
 // and nil,nil is returned.
 func (ts *Server) UpdateTabletFields(ctx context.Context, alias *topodatapb.TabletAlias, update func(*topodatapb.Tablet) error) (*topodatapb.Tablet, error) {
-	span := trace.NewSpanFromContext(ctx)
-	span.StartClient("TopoServer.UpdateTabletFields")
+	span, ctx := trace.NewSpan(ctx, "TopoServer.UpdateTabletFields")
 	span.Annotate("tablet", topoproto.TabletAliasString(alias))
 	defer span.Finish()
 
@@ -290,12 +289,12 @@ func (ts *Server) UpdateTabletFields(ctx context.Context, alias *topodatapb.Tabl
 			return nil, err
 		}
 		if err = update(ti.Tablet); err != nil {
-			if err == ErrNoUpdateNeeded {
+			if IsErrType(err, NoUpdateNeeded) {
 				return nil, nil
 			}
 			return nil, err
 		}
-		if err = ts.UpdateTablet(ctx, ti); err != ErrBadVersion {
+		if err = ts.UpdateTablet(ctx, ti); !IsErrType(err, BadVersion) {
 			return ti.Tablet, err
 		}
 	}
@@ -309,7 +308,7 @@ func Validate(ctx context.Context, ts *Server, tabletAlias *topodatapb.TabletAli
 		return err
 	}
 	if !topoproto.TabletAliasEqual(tablet.Alias, tabletAlias) {
-		return fmt.Errorf("bad tablet alias data for tablet %v: %#v", topoproto.TabletAliasString(tabletAlias), tablet.Alias)
+		return vterrors.Errorf(vtrpc.Code_INVALID_ARGUMENT, "bad tablet alias data for tablet %v: %#v", topoproto.TabletAliasString(tabletAlias), tablet.Alias)
 	}
 
 	// Validate the entry in the shard replication nodes
@@ -319,7 +318,7 @@ func Validate(ctx context.Context, ts *Server, tabletAlias *topodatapb.TabletAli
 	}
 
 	if _, err = si.GetShardReplicationNode(tabletAlias); err != nil {
-		return fmt.Errorf("tablet %v not found in cell %v shard replication: %v", tabletAlias, tablet.Alias.Cell, err)
+		return vterrors.Wrapf(err, "tablet %v not found in cell %v shard replication", tabletAlias, tablet.Alias.Cell)
 	}
 
 	return nil
@@ -338,15 +337,10 @@ func (ts *Server) CreateTablet(ctx context.Context, tablet *topodatapb.Tablet) e
 		return err
 	}
 	tabletPath := path.Join(TabletsPath, topoproto.TabletAliasString(tablet.Alias), TabletFile)
-	if _, err = conn.Create(ctx, tabletPath, data); err != nil && err != ErrNodeExists {
+	if _, err = conn.Create(ctx, tabletPath, data); err != nil {
 		return err
 	}
 
-	// Update ShardReplication in any case, to be sure.  This is
-	// meant to fix the case when a Tablet record was created, but
-	// then the ShardReplication record was not (because for
-	// instance of a startup timeout). Upon running this code
-	// again, we want to fix ShardReplication.
 	if updateErr := UpdateTabletReplicationData(ctx, ts, tablet); updateErr != nil {
 		return updateErr
 	}
@@ -408,8 +402,7 @@ func DeleteTabletReplicationData(ctx context.Context, ts *Server, tablet *topoda
 // incomplete, meaning some tablets couldn't be read.
 // The map is indexed by topoproto.TabletAliasString(tablet alias).
 func (ts *Server) GetTabletMap(ctx context.Context, tabletAliases []*topodatapb.TabletAlias) (map[string]*TabletInfo, error) {
-	span := trace.NewSpanFromContext(ctx)
-	span.StartLocal("topo.GetTabletMap")
+	span, ctx := trace.NewSpan(ctx, "topo.GetTabletMap")
 	span.Annotate("num_tablets", len(tabletAliases))
 	defer span.Finish()
 
@@ -428,8 +421,8 @@ func (ts *Server) GetTabletMap(ctx context.Context, tabletAliases []*topodatapb.
 			if err != nil {
 				log.Warningf("%v: %v", tabletAlias, err)
 				// There can be data races removing nodes - ignore them for now.
-				if err != ErrNoNode {
-					someError = ErrPartialResult
+				if !IsErrType(err, NoNode) {
+					someError = NewError(PartialResult, "")
 				}
 			} else {
 				tabletMap[topoproto.TabletAliasString(tabletAlias)] = tabletInfo
@@ -454,7 +447,7 @@ func (ts *Server) GetTabletsByCell(ctx context.Context, cell string) ([]*topodat
 	// List the directory, and parse the aliases
 	children, err := conn.ListDir(ctx, TabletsPath, false /*full*/)
 	if err != nil {
-		if err == ErrNoNode {
+		if IsErrType(err, NoNode) {
 			// directory doesn't exist, empty list, no error.
 			return nil, nil
 		}

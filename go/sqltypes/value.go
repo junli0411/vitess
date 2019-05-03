@@ -23,10 +23,10 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/youtube/vitess/go/bytes2"
-	"github.com/youtube/vitess/go/hack"
+	"vitess.io/vitess/go/bytes2"
+	"vitess.io/vitess/go/hack"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 var (
@@ -74,7 +74,7 @@ func NewValue(typ querypb.Type, val []byte) (v Value, err error) {
 			return NULL, err
 		}
 		return MakeTrusted(typ, val), nil
-	case IsQuoted(typ) || typ == Null:
+	case IsQuoted(typ) || typ == Bit || typ == Null:
 		return MakeTrusted(typ, val), nil
 	}
 	// All other types are unsafe or invalid.
@@ -100,6 +100,11 @@ func NewInt64(v int64) Value {
 	return MakeTrusted(Int64, strconv.AppendInt(nil, v, 10))
 }
 
+// NewInt8 builds an Int8 Value.
+func NewInt8(v int8) Value {
+	return MakeTrusted(Int8, strconv.AppendInt(nil, int64(v), 10))
+}
+
 // NewInt32 builds an Int64 Value.
 func NewInt32(v int32) Value {
 	return MakeTrusted(Int32, strconv.AppendInt(nil, int64(v), 10))
@@ -108,6 +113,11 @@ func NewInt32(v int32) Value {
 // NewUint64 builds an Uint64 Value.
 func NewUint64(v uint64) Value {
 	return MakeTrusted(Uint64, strconv.AppendUint(nil, v, 10))
+}
+
+// NewUint32 builds an Uint32 Value.
+func NewUint32(v uint32) Value {
+	return MakeTrusted(Uint32, strconv.AppendUint(nil, uint64(v), 10))
 }
 
 // NewFloat64 builds an Float64 Value.
@@ -205,7 +215,7 @@ func (v Value) String() string {
 	if v.typ == Null {
 		return "NULL"
 	}
-	if v.IsQuoted() {
+	if v.IsQuoted() || v.typ == Bit {
 		return fmt.Sprintf("%v(%q)", v.typ, v.val)
 	}
 	return fmt.Sprintf("%v(%s)", v.typ, v.val)
@@ -218,6 +228,8 @@ func (v Value) EncodeSQL(b BinWriter) {
 		b.Write(nullstr)
 	case v.IsQuoted():
 		encodeBytesSQL(v.val, b)
+	case v.typ == Bit:
+		encodeBytesSQLBits(v.val, b)
 	default:
 		b.Write(v.val)
 	}
@@ -228,7 +240,7 @@ func (v Value) EncodeASCII(b BinWriter) {
 	switch {
 	case v.typ == Null:
 		b.Write(nullstr)
-	case v.IsQuoted():
+	case v.IsQuoted() || v.typ == Bit:
 		encodeBytesASCII(v.val, b)
 	default:
 		b.Write(v.val)
@@ -279,7 +291,7 @@ func (v Value) IsBinary() bool {
 // It's not a complete implementation.
 func (v Value) MarshalJSON() ([]byte, error) {
 	switch {
-	case v.IsQuoted():
+	case v.IsQuoted() || v.typ == Bit:
 		return json.Marshal(v.ToString())
 	case v.typ == Null:
 		return nullstr, nil
@@ -331,6 +343,14 @@ func encodeBytesSQL(val []byte, b BinWriter) {
 	}
 	buf.WriteByte('\'')
 	b.Write(buf.Bytes())
+}
+
+func encodeBytesSQLBits(val []byte, b BinWriter) {
+	fmt.Fprint(b, "b'")
+	for _, ch := range val {
+		fmt.Fprintf(b, "%08b", ch)
+	}
+	fmt.Fprint(b, "'")
 }
 
 func encodeBytesASCII(val []byte, b BinWriter) {

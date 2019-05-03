@@ -20,13 +20,13 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/tableacl"
-	"github.com/youtube/vitess/go/vt/vterrors"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/tableacl"
+	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
 
-	vtrpcpb "github.com/youtube/vitess/go/vt/proto/vtrpc"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
 
 var (
@@ -83,6 +83,8 @@ const (
 	PlanOtherAdmin
 	// PlanMessageStream is used for streaming messages.
 	PlanMessageStream
+	// PlanSelectImpossible is used for where or having clauses that can never be true.
+	PlanSelectImpossible
 	// NumPlans stores the total number of plans
 	NumPlans
 )
@@ -105,6 +107,7 @@ var planName = [NumPlans]string{
 	"OTHER_READ",
 	"OTHER_ADMIN",
 	"MESSAGE_STREAM",
+	"SELECT_IMPOSSIBLE",
 }
 
 func (pt PlanType) String() string {
@@ -126,36 +129,12 @@ func PlanByName(s string) (pt PlanType, ok bool) {
 
 // IsSelect returns true if PlanType is about a select query.
 func (pt PlanType) IsSelect() bool {
-	return pt == PlanPassSelect || pt == PlanSelectLock
+	return pt == PlanPassSelect || pt == PlanSelectLock || pt == PlanSelectImpossible
 }
 
 // MarshalJSON returns a json string for PlanType.
 func (pt PlanType) MarshalJSON() ([]byte, error) {
 	return json.Marshal(pt.String())
-}
-
-// MinRole is the minimum Role required to execute this PlanType.
-func (pt PlanType) MinRole() tableacl.Role {
-	return tableACLRoles[pt]
-}
-
-var tableACLRoles = map[PlanType]tableacl.Role{
-	PlanPassSelect:     tableacl.READER,
-	PlanSelectLock:     tableacl.READER,
-	PlanSet:            tableacl.READER,
-	PlanPassDML:        tableacl.WRITER,
-	PlanDMLPK:          tableacl.WRITER,
-	PlanDMLSubquery:    tableacl.WRITER,
-	PlanInsertPK:       tableacl.WRITER,
-	PlanInsertSubquery: tableacl.WRITER,
-	PlanInsertMessage:  tableacl.WRITER,
-	PlanDDL:            tableacl.ADMIN,
-	PlanSelectStream:   tableacl.READER,
-	PlanOtherRead:      tableacl.READER,
-	PlanOtherAdmin:     tableacl.ADMIN,
-	PlanUpsertPK:       tableacl.WRITER,
-	PlanNextval:        tableacl.WRITER,
-	PlanMessageStream:  tableacl.WRITER,
 }
 
 //_______________________________________________
@@ -264,12 +243,14 @@ func (plan *Plan) setTable(tableName sqlparser.TableIdent, tables map[string]*sc
 }
 
 // Build builds a plan based on the schema.
-func Build(sql string, tables map[string]*schema.Table) (*Plan, error) {
-	statement, err := sqlparser.Parse(sql)
+func Build(statement sqlparser.Statement, tables map[string]*schema.Table) (*Plan, error) {
+	var plan *Plan
+
+	err := checkForPoolingUnsafeConstructs(statement)
 	if err != nil {
 		return nil, err
 	}
-	var plan *Plan
+
 	switch stmt := statement.(type) {
 	case *sqlparser.Union:
 		plan, err = &Plan{
@@ -308,6 +289,11 @@ func Build(sql string, tables map[string]*schema.Table) (*Plan, error) {
 // BuildStreaming builds a streaming plan based on the schema.
 func BuildStreaming(sql string, tables map[string]*schema.Table) (*Plan, error) {
 	statement, err := sqlparser.Parse(sql)
+	if err != nil {
+		return nil, err
+	}
+
+	err = checkForPoolingUnsafeConstructs(statement)
 	if err != nil {
 		return nil, err
 	}
@@ -352,4 +338,21 @@ func BuildMessageStreaming(name string, tables map[string]*schema.Table) (*Plan,
 		Role:      tableacl.WRITER,
 	}}
 	return plan, nil
+}
+
+// checkForPoolingUnsafeConstructs returns an error if the SQL expression contains
+// a call to GET_LOCK(), which is unsafe with server-side connection pooling.
+// For more background, see https://github.com/vitessio/vitess/issues/3631.
+func checkForPoolingUnsafeConstructs(expr sqlparser.SQLNode) error {
+	return sqlparser.Walk(func(node sqlparser.SQLNode) (kontinue bool, err error) {
+		if f, ok := node.(*sqlparser.FuncExpr); ok {
+			if f.Name.Lowered() == "get_lock" {
+				return false, vterrors.New(vtrpcpb.Code_FAILED_PRECONDITION, "get_lock() not allowed")
+			}
+		}
+
+		// TODO: This could be smarter about not walking down parts of the AST that can't contain
+		// function calls.
+		return true, nil
+	}, expr)
 }

@@ -17,15 +17,15 @@ limitations under the License.
 package zk2topo
 
 import (
-	"fmt"
 	"path"
 	"sort"
 
-	log "github.com/golang/glog"
 	"github.com/samuel/go-zookeeper/zk"
 	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/vterrors"
 
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo"
 )
 
 // This file contains the master election code for zk2topo.Server.
@@ -40,7 +40,7 @@ func (zs *Server) NewMasterParticipation(name, id string) (topo.MasterParticipat
 	// Create the toplevel directory, OK if it exists already.
 	// We will create the parent directory as well, but not more.
 	if _, err := CreateRecursive(ctx, zs.conn, zkPath, nil, 0, zk.WorldACL(PermDirectory), 1); err != nil && err != zk.ErrNodeExists {
-		return nil, convertError(err)
+		return nil, convertError(err, zkPath)
 	}
 
 	result := &zkMasterParticipation{
@@ -85,7 +85,7 @@ func (mp *zkMasterParticipation) WaitForMastership() (context.Context, error) {
 	// If Stop was already called, mp.done is closed, so we are interrupted.
 	select {
 	case <-mp.done:
-		return nil, topo.ErrInterrupted
+		return nil, topo.NewError(topo.Interrupted, "mastership")
 	default:
 	}
 
@@ -96,14 +96,14 @@ func (mp *zkMasterParticipation) WaitForMastership() (context.Context, error) {
 	select {
 	case <-mp.stopCtx.Done():
 		close(mp.done)
-		return nil, topo.ErrInterrupted
+		return nil, topo.NewError(topo.Interrupted, "mastership")
 	default:
 	}
 
 	// Create the current proposal.
 	proposal, err := mp.zs.conn.Create(ctx, zkPath+"/", mp.id, zk.FlagSequence|zk.FlagEphemeral, zk.WorldACL(PermFile))
 	if err != nil {
-		return nil, fmt.Errorf("cannot create proposal file in %v: %v", zkPath, err)
+		return nil, vterrors.Wrapf(err, "cannot create proposal file in %v", zkPath)
 	}
 
 	// Wait until we are it, or we are interrupted. Using a
@@ -115,7 +115,7 @@ func (mp *zkMasterParticipation) WaitForMastership() (context.Context, error) {
 		break
 	case context.Canceled:
 		close(mp.done)
-		return nil, topo.ErrInterrupted
+		return nil, topo.NewError(topo.Interrupted, "mastership")
 	default:
 		// something else went wrong
 		return nil, err
@@ -174,7 +174,7 @@ func (mp *zkMasterParticipation) GetCurrentMasterID(ctx context.Context) (string
 	for {
 		children, _, err := mp.zs.conn.Children(ctx, zkPath)
 		if err != nil {
-			return "", convertError(err)
+			return "", convertError(err, zkPath)
 		}
 		if len(children) == 0 {
 			// no current master
@@ -190,7 +190,7 @@ func (mp *zkMasterParticipation) GetCurrentMasterID(ctx context.Context) (string
 				// try again
 				continue
 			}
-			return "", convertError(err)
+			return "", convertError(err, zkPath)
 		}
 
 		return string(data), nil

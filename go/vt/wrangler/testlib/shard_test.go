@@ -22,13 +22,14 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/logutil"
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
-	"github.com/youtube/vitess/go/vt/vttablet/tmclient"
-	"github.com/youtube/vitess/go/vt/wrangler"
+	"vitess.io/vitess/go/vt/logutil"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/topotools"
+	"vitess.io/vitess/go/vt/vttablet/tmclient"
+	"vitess.io/vitess/go/vt/wrangler"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 func TestDeleteShardCleanup(t *testing.T) {
@@ -42,6 +43,12 @@ func TestDeleteShardCleanup(t *testing.T) {
 	master := NewFakeTablet(t, wr, "cell1", 0, topodatapb.TabletType_MASTER, nil)
 	slave := NewFakeTablet(t, wr, "cell1", 1, topodatapb.TabletType_REPLICA, nil)
 	remoteSlave := NewFakeTablet(t, wr, "cell2", 2, topodatapb.TabletType_REPLICA, nil)
+
+	// Build keyspace graph
+	err := topotools.RebuildKeyspace(context.Background(), logutil.NewConsoleLogger(), ts, master.Tablet.Keyspace, []string{"cell1", "cell2"})
+	if err != nil {
+		t.Fatalf("RebuildKeyspaceLocked failed: %v", err)
+	}
 
 	// Delete the ShardReplication record in cell2
 	if err := ts.DeleteShardReplication(ctx, "cell2", remoteSlave.Tablet.Keyspace, remoteSlave.Tablet.Shard); err != nil {
@@ -80,13 +87,13 @@ func TestDeleteShardCleanup(t *testing.T) {
 
 	// Make sure all tablets are gone.
 	for _, ft := range []*FakeTablet{master, slave, remoteSlave} {
-		if _, err := ts.GetTablet(ctx, ft.Tablet.Alias); err != topo.ErrNoNode {
+		if _, err := ts.GetTablet(ctx, ft.Tablet.Alias); !topo.IsErrType(err, topo.NoNode) {
 			t.Errorf("tablet %v is still in topo: %v", ft.Tablet.Alias, err)
 		}
 	}
 
 	// Make sure the shard is gone.
-	if _, err := ts.GetShard(ctx, master.Tablet.Keyspace, master.Tablet.Shard); err != topo.ErrNoNode {
+	if _, err := ts.GetShard(ctx, master.Tablet.Keyspace, master.Tablet.Shard); !topo.IsErrType(err, topo.NoNode) {
 		t.Errorf("shard %v/%v is still in topo: %v", master.Tablet.Keyspace, master.Tablet.Shard, err)
 	}
 }

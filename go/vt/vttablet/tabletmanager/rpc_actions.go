@@ -21,15 +21,17 @@ import (
 	"regexp"
 	"time"
 
-	log "github.com/golang/glog"
+	"vitess.io/vitess/go/vt/vterrors"
+
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/hook"
-	"github.com/youtube/vitess/go/vt/mysqlctl"
-	"github.com/youtube/vitess/go/vt/topotools"
+	"vitess.io/vitess/go/vt/hook"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/mysqlctl"
+	"vitess.io/vitess/go/vt/topotools"
 
-	tabletmanagerdatapb "github.com/youtube/vitess/go/vt/proto/tabletmanagerdata"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	tabletmanagerdatapb "vitess.io/vitess/go/vt/proto/tabletmanagerdata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 // This file contains the implementations of RPCAgent methods.
@@ -62,6 +64,12 @@ func (agent *ActionAgent) ChangeType(ctx context.Context, tabletType topodatapb.
 	}
 	defer agent.unlock()
 
+	// We don't want to allow multiple callers to claim a tablet as drained. There is a race that could happen during
+	// horizontal resharding where two vtworkers will try to DRAIN the same tablet. This check prevents that race from
+	// causing errors.
+	if tabletType == topodatapb.TabletType_DRAINED && agent.Tablet().Type == topodatapb.TabletType_DRAINED {
+		return fmt.Errorf("Tablet: %v, is already drained", agent.TabletAlias)
+	}
 	// change our type in the topology
 	_, err := topotools.ChangeType(ctx, agent.TopoServer, agent.TabletAlias, tabletType)
 	if err != nil {
@@ -75,7 +83,7 @@ func (agent *ActionAgent) ChangeType(ctx context.Context, tabletType topodatapb.
 
 	// Let's see if we need to fix semi-sync acking.
 	if err := agent.fixSemiSyncAndReplication(agent.Tablet().Type); err != nil {
-		return fmt.Errorf("fixSemiSyncAndReplication failed, may not ack correctly: %v", err)
+		return vterrors.Wrap(err, "fixSemiSyncAndReplication failed, may not ack correctly")
 	}
 
 	// and re-run health check

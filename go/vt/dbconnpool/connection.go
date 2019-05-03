@@ -22,10 +22,10 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/mysql"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/stats"
-	"github.com/youtube/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/mysql"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/stats"
+	"vitess.io/vitess/go/vt/dbconfigs"
 )
 
 // DBConnection re-exposes mysql.Conn with some wrapping to implement
@@ -117,11 +117,16 @@ func (dbc *DBConnection) ExecuteStreamFetch(query string, callback func(*sqltype
 // NewDBConnection returns a new DBConnection based on the ConnParams
 // and will use the provided stats to collect timing.
 func NewDBConnection(info *mysql.ConnParams, mysqlStats *stats.Timings) (*DBConnection, error) {
+	start := time.Now()
+	defer mysqlStats.Record("Connect", start)
 	params, err := dbconfigs.WithCredentials(info)
 	if err != nil {
 		return nil, err
 	}
 	ctx := context.Background()
-	c, err := mysql.Connect(ctx, &params)
+	c, err := mysql.Connect(ctx, params)
+	if err != nil {
+		mysqlStats.Record("ConnectError", start)
+	}
 	return &DBConnection{c, mysqlStats}, err
 }

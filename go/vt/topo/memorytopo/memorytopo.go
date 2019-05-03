@@ -25,12 +25,12 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/golang/glog"
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/topo"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 const (
@@ -76,7 +76,7 @@ func (f *Factory) Create(cell, serverAddr, root string) (topo.Conn, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.cells[cell]; !ok {
-		return nil, topo.ErrNoNode
+		return nil, topo.NewError(topo.NoNode, cell)
 	}
 	return &Conn{
 		factory: f,

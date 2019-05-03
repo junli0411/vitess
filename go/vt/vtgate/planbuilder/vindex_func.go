@@ -20,20 +20,18 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/youtube/vitess/go/vt/sqlparser"
-	"github.com/youtube/vitess/go/vt/vtgate/engine"
-	"github.com/youtube/vitess/go/vt/vtgate/vindexes"
+	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vtgate/engine"
+	"vitess.io/vitess/go/vt/vtgate/vindexes"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 var _ builder = (*vindexFunc)(nil)
-var _ columnOriginator = (*vindexFunc)(nil)
 
 // vindexFunc is used to build a VindexFunc primitive.
 type vindexFunc struct {
-	order  int
-	symtab *symtab
+	order int
 
 	// resultColumns represent the columns returned by this route.
 	resultColumns []*resultColumn
@@ -42,10 +40,9 @@ type vindexFunc struct {
 	eVindexFunc *engine.VindexFunc
 }
 
-func newVindexFunc(alias sqlparser.TableName, vindex vindexes.Vindex, vschema VSchema) *vindexFunc {
+func newVindexFunc(alias sqlparser.TableName, vindex vindexes.Vindex) (*vindexFunc, *symtab) {
 	vf := &vindexFunc{
-		symtab: newSymtab(vschema),
-		order:  1,
+		order: 1,
 		eVindexFunc: &engine.VindexFunc{
 			Vindex: vindex,
 		},
@@ -58,43 +55,25 @@ func newVindexFunc(alias sqlparser.TableName, vindex vindexes.Vindex, vschema VS
 	}
 
 	// Column names are hard-coded to id, keyspace_id
-	t.columns = map[string]*column{
-		"id": {
-			origin: vf,
-			name:   sqlparser.NewColIdent("id"),
-			table:  t,
-			colnum: 0,
-		},
-		"keyspace_id": {
-			origin: vf,
-			name:   sqlparser.NewColIdent("keyspace_id"),
-			table:  t,
-			colnum: 1,
-		},
-	}
+	t.addColumn(sqlparser.NewColIdent("id"), &column{origin: vf})
+	t.addColumn(sqlparser.NewColIdent("keyspace_id"), &column{origin: vf})
+	t.addColumn(sqlparser.NewColIdent("range_start"), &column{origin: vf})
+	t.addColumn(sqlparser.NewColIdent("range_end"), &column{origin: vf})
+	t.isAuthoritative = true
 
+	st := newSymtab()
 	// AddTable will not fail because symtab is empty.
-	_ = vf.symtab.AddTable(t)
-	return vf
+	_ = st.AddTable(t)
+	return vf, st
 }
 
-// Symtab satisfies the builder interface.
-func (vf *vindexFunc) Symtab() *symtab {
-	return vf.symtab.Resolve()
-}
-
-// Order returns the order of the subquery.
+// Order satisfies the builder interface.
 func (vf *vindexFunc) Order() int {
 	return vf.order
 }
 
-// MaxOrder satisfies the builder interface.
-func (vf *vindexFunc) MaxOrder() int {
-	return vf.order
-}
-
-// SetOrder satisfies the builder interface.
-func (vf *vindexFunc) SetOrder(order int) {
+// Reorder satisfies the builder interface.
+func (vf *vindexFunc) Reorder(order int) {
 	vf.order = order + 1
 }
 
@@ -103,8 +82,8 @@ func (vf *vindexFunc) Primitive() engine.Primitive {
 	return vf.eVindexFunc
 }
 
-// Leftmost satisfies the builder interface.
-func (vf *vindexFunc) Leftmost() columnOriginator {
+// First satisfies the builder interface.
+func (vf *vindexFunc) First() builder {
 	return vf
 }
 
@@ -115,7 +94,7 @@ func (vf *vindexFunc) ResultColumns() []*resultColumn {
 
 // PushFilter satisfies the builder interface.
 // Only some where clauses are allowed.
-func (vf *vindexFunc) PushFilter(filter sqlparser.Expr, whereType string, _ columnOriginator) error {
+func (vf *vindexFunc) PushFilter(pb *primitiveBuilder, filter sqlparser.Expr, whereType string, _ builder) error {
 	if vf.eVindexFunc.Opcode != engine.VindexNone {
 		return errors.New("unsupported: where clause for vindex function must be of the form id = <val> (multiple filters)")
 	}
@@ -151,7 +130,7 @@ func (vf *vindexFunc) PushFilter(filter sqlparser.Expr, whereType string, _ colu
 }
 
 // PushSelect satisfies the builder interface.
-func (vf *vindexFunc) PushSelect(expr *sqlparser.AliasedExpr, _ columnOriginator) (rc *resultColumn, colnum int, err error) {
+func (vf *vindexFunc) PushSelect(expr *sqlparser.AliasedExpr, _ builder) (rc *resultColumn, colnum int, err error) {
 	// Catch the case where no where clause was specified. If so, the opcode
 	// won't be set.
 	if vf.eVindexFunc.Opcode == engine.VindexNone {
@@ -161,24 +140,13 @@ func (vf *vindexFunc) PushSelect(expr *sqlparser.AliasedExpr, _ columnOriginator
 	if !ok {
 		return nil, 0, errors.New("unsupported: expression on results of a vindex function")
 	}
-	rc = vf.symtab.NewResultColumn(expr, vf)
+	rc = newResultColumn(expr, vf)
 	vf.resultColumns = append(vf.resultColumns, rc)
 	vf.eVindexFunc.Fields = append(vf.eVindexFunc.Fields, &querypb.Field{
 		Name: rc.alias.String(),
 		Type: querypb.Type_VARBINARY,
 	})
-	switch {
-	case col.Name.EqualString("id"):
-		vf.eVindexFunc.Cols = append(vf.eVindexFunc.Cols, 0)
-	case col.Name.EqualString("keyspace_id"):
-		vf.eVindexFunc.Cols = append(vf.eVindexFunc.Cols, 1)
-	case col.Name.EqualString("range_start"):
-		vf.eVindexFunc.Cols = append(vf.eVindexFunc.Cols, 2)
-	case col.Name.EqualString("range_end"):
-		vf.eVindexFunc.Cols = append(vf.eVindexFunc.Cols, 3)
-	default:
-		return nil, 0, fmt.Errorf("unrecognized column %s for vindex: %s", col.Name, vf.eVindexFunc.Vindex)
-	}
+	vf.eVindexFunc.Cols = append(vf.eVindexFunc.Cols, col.Metadata.(*column).colnum)
 	return rc, len(vf.resultColumns) - 1, nil
 }
 

@@ -24,10 +24,10 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/youtube/vitess/go/vt/topo"
-	"github.com/youtube/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/topo"
+	"vitess.io/vitess/go/vt/topo/memorytopo"
 
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 func TestHandleExplorerRedirect(t *testing.T) {
@@ -141,7 +141,7 @@ func TestHandlePathShard(t *testing.T) {
 	input := path.Join("/global", "keyspaces", "test_keyspace", "shards", "-80", "Shard")
 	cells := []string{"cell1", "cell2", "cell3"}
 	keyspace := &topodatapb.Keyspace{}
-	want := "cells: \"cell1\"\ncells: \"cell2\"\ncells: \"cell3\"\n"
+	want := "is_master_serving: true\n"
 
 	ctx := context.Background()
 	ts := memorytopo.NewServer(cells...)
@@ -153,8 +153,6 @@ func TestHandlePathShard(t *testing.T) {
 	}
 	if _, err := ts.UpdateShardFields(ctx, "test_keyspace", "-80", func(si *topo.ShardInfo) error {
 		// Set cells, reset other fields so printout is easier to compare.
-		si.Shard.Cells = cells
-		si.ServedTypes = nil
 		si.KeyRange = nil
 		return nil
 	}); err != nil {
@@ -206,7 +204,7 @@ func TestHandlePathTablet(t *testing.T) {
 func TestHandleBadPath(t *testing.T) {
 	input := "/foo"
 	cells := []string{"cell1", "cell2", "cell3"}
-	want := "Invalid cell: node doesn't exist"
+	want := "Invalid cell: node doesn't exist: cells/foo/CellInfo"
 
 	ts := memorytopo.NewServer(cells...)
 	ex := newBackendExplorer(ts)

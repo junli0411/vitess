@@ -21,18 +21,19 @@ import (
 	"io"
 	"sync"
 
-	"github.com/youtube/vitess/go/netutil"
-	"github.com/youtube/vitess/go/sqltypes"
-	"github.com/youtube/vitess/go/vt/callerid"
-	"github.com/youtube/vitess/go/vt/grpcclient"
-	"github.com/youtube/vitess/go/vt/vttablet/queryservice"
-	"github.com/youtube/vitess/go/vt/vttablet/tabletconn"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
+	"vitess.io/vitess/go/netutil"
+	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/callerid"
+	"vitess.io/vitess/go/vt/grpcclient"
+	"vitess.io/vitess/go/vt/vttablet/queryservice"
+	"vitess.io/vitess/go/vt/vttablet/tabletconn"
 
-	querypb "github.com/youtube/vitess/go/vt/proto/query"
-	queryservicepb "github.com/youtube/vitess/go/vt/proto/queryservice"
-	topodatapb "github.com/youtube/vitess/go/vt/proto/topodata"
+	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
+	queryservicepb "vitess.io/vitess/go/vt/proto/queryservice"
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
 const protocolName = "grpc"
@@ -138,7 +139,7 @@ func (conn *gRPCQueryClient) ExecuteBatch(ctx context.Context, target *querypb.T
 }
 
 // StreamExecute executes the query and streams results back through callback.
-func (conn *gRPCQueryClient) StreamExecute(ctx context.Context, target *querypb.Target, query string, bindVars map[string]*querypb.BindVariable, options *querypb.ExecuteOptions, callback func(*sqltypes.Result) error) error {
+func (conn *gRPCQueryClient) StreamExecute(ctx context.Context, target *querypb.Target, query string, bindVars map[string]*querypb.BindVariable, transactionID int64, options *querypb.ExecuteOptions, callback func(*sqltypes.Result) error) error {
 	// All streaming clients should follow the code pattern below.
 	// The first part of the function starts the stream while holding
 	// a lock on conn.mu. The second part receives the data and calls
@@ -165,7 +166,8 @@ func (conn *gRPCQueryClient) StreamExecute(ctx context.Context, target *querypb.
 				Sql:           query,
 				BindVariables: bindVars,
 			},
-			Options: options,
+			Options:       options,
+			TransactionId: transactionID,
 		}
 		stream, err := conn.c.StreamExecute(ctx, req)
 		if err != nil {
@@ -663,6 +665,91 @@ func (conn *gRPCQueryClient) UpdateStream(ctx context.Context, target *querypb.T
 			if err == nil || err == io.EOF {
 				return nil
 			}
+			return err
+		}
+	}
+}
+
+// VStream starts a VReplication stream.
+func (conn *gRPCQueryClient) VStream(ctx context.Context, target *querypb.Target, position string, filter *binlogdatapb.Filter, send func([]*binlogdatapb.VEvent) error) error {
+	stream, err := func() (queryservicepb.Query_VStreamClient, error) {
+		conn.mu.RLock()
+		defer conn.mu.RUnlock()
+		if conn.cc == nil {
+			return nil, tabletconn.ConnClosed
+		}
+
+		req := &binlogdatapb.VStreamRequest{
+			Target:            target,
+			EffectiveCallerId: callerid.EffectiveCallerIDFromContext(ctx),
+			ImmediateCallerId: callerid.ImmediateCallerIDFromContext(ctx),
+			Position:          position,
+			Filter:            filter,
+		}
+		stream, err := conn.c.VStream(ctx, req)
+		if err != nil {
+			return nil, tabletconn.ErrorFromGRPC(err)
+		}
+		return stream, nil
+	}()
+	if err != nil {
+		return err
+	}
+	for {
+		r, err := stream.Recv()
+		if err != nil {
+			return tabletconn.ErrorFromGRPC(err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		if err := send(r.Events); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+// VStreamRows streams rows of a query from the specified starting point.
+func (conn *gRPCQueryClient) VStreamRows(ctx context.Context, target *querypb.Target, query string, lastpk *querypb.QueryResult, send func(*binlogdatapb.VStreamRowsResponse) error) error {
+	stream, err := func() (queryservicepb.Query_VStreamRowsClient, error) {
+		conn.mu.RLock()
+		defer conn.mu.RUnlock()
+		if conn.cc == nil {
+			return nil, tabletconn.ConnClosed
+		}
+
+		req := &binlogdatapb.VStreamRowsRequest{
+			Target:            target,
+			EffectiveCallerId: callerid.EffectiveCallerIDFromContext(ctx),
+			ImmediateCallerId: callerid.ImmediateCallerIDFromContext(ctx),
+			Query:             query,
+			Lastpk:            lastpk,
+		}
+		stream, err := conn.c.VStreamRows(ctx, req)
+		if err != nil {
+			return nil, tabletconn.ErrorFromGRPC(err)
+		}
+		return stream, nil
+	}()
+	if err != nil {
+		return err
+	}
+	for {
+		r, err := stream.Recv()
+		if err != nil {
+			return tabletconn.ErrorFromGRPC(err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if err := send(r); err != nil {
 			return err
 		}
 	}
