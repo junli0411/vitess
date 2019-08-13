@@ -59,8 +59,12 @@ var (
 	errNoKeyspace     = vterrors.Errorf(vtrpcpb.Code_FAILED_PRECONDITION, "no keyspace in database name specified. Supported database name format (items in <> are optional): keyspace<:shard><@type> or keyspace<[range]><@type>")
 	defaultTabletType topodatapb.TabletType
 
+	// TODO: @rafael - These two counters should be deprecated in favor of the ByTable ones. They are kept for now for backwards compatibility.
 	queriesProcessed = stats.NewCountersWithSingleLabel("QueriesProcessed", "Queries processed at vtgate by plan type", "Plan")
 	queriesRouted    = stats.NewCountersWithSingleLabel("QueriesRouted", "Queries routed from vtgate to vttablet by plan type", "Plan")
+
+	queriesProcessedByTable = stats.NewCountersWithMultiLabels("QueriesProcessedByTable", "Queries processed at vtgate by plan type, keyspace and table", []string{"Plan", "Keyspace", "Table"})
+	queriesRoutedByTable    = stats.NewCountersWithMultiLabels("QueriesRoutedByTable", "Queries routed from vtgate to vttablet by plan type, keyspace and table", []string{"Plan", "Keyspace", "Table"})
 )
 
 func init() {
@@ -76,13 +80,12 @@ type Executor struct {
 	scatterConn *ScatterConn
 	txConn      *TxConn
 
-	mu               sync.Mutex
-	vschema          *vindexes.VSchema
-	normalize        bool
-	streamSize       int
-	legacyAutocommit bool
-	plans            *cache.LRUCache
-	vschemaStats     *VSchemaStats
+	mu           sync.Mutex
+	vschema      *vindexes.VSchema
+	normalize    bool
+	streamSize   int
+	plans        *cache.LRUCache
+	vschemaStats *VSchemaStats
 
 	vm VSchemaManager
 }
@@ -90,17 +93,16 @@ type Executor struct {
 var executorOnce sync.Once
 
 // NewExecutor creates a new Executor.
-func NewExecutor(ctx context.Context, serv srvtopo.Server, cell, statsName string, resolver *Resolver, normalize bool, streamSize int, queryPlanCacheSize int64, legacyAutocommit bool) *Executor {
+func NewExecutor(ctx context.Context, serv srvtopo.Server, cell, statsName string, resolver *Resolver, normalize bool, streamSize int, queryPlanCacheSize int64) *Executor {
 	e := &Executor{
-		serv:             serv,
-		cell:             cell,
-		resolver:         resolver,
-		scatterConn:      resolver.scatterConn,
-		txConn:           resolver.scatterConn.txConn,
-		plans:            cache.NewLRUCache(queryPlanCacheSize),
-		normalize:        normalize,
-		streamSize:       streamSize,
-		legacyAutocommit: legacyAutocommit,
+		serv:        serv,
+		cell:        cell,
+		resolver:    resolver,
+		scatterConn: resolver.scatterConn,
+		txConn:      resolver.scatterConn.txConn,
+		plans:       cache.NewLRUCache(queryPlanCacheSize),
+		normalize:   normalize,
+		streamSize:  streamSize,
 	}
 
 	vschemaacl.Init()
@@ -131,6 +133,9 @@ func (e *Executor) Execute(ctx context.Context, method string, safeSession *Safe
 	logStats := NewLogStats(ctx, method, sql, bindVars)
 	result, err = e.execute(ctx, safeSession, sql, bindVars, logStats)
 	logStats.Error = err
+	if result != nil && len(result.Rows) > *warnMemoryRows {
+		warnings.Add("ResultsExceeded", 1)
+	}
 
 	// The mysql plugin runs an implicit rollback whenever a connection closes.
 	// To avoid spamming the log with no-op rollback records, ignore it if
@@ -143,8 +148,7 @@ func (e *Executor) Execute(ctx context.Context, method string, safeSession *Safe
 
 func (e *Executor) execute(ctx context.Context, safeSession *SafeSession, sql string, bindVars map[string]*querypb.BindVariable, logStats *LogStats) (*sqltypes.Result, error) {
 	// Start an implicit transaction if necessary.
-	// TODO(sougou): deprecate legacyMode after all users are migrated out.
-	if !e.legacyAutocommit && !safeSession.Autocommit && !safeSession.InTransaction() {
+	if !safeSession.Autocommit && !safeSession.InTransaction() {
 		if err := e.txConn.Begin(ctx, safeSession); err != nil {
 			return nil, err
 		}
@@ -182,11 +186,6 @@ func (e *Executor) execute(ctx context.Context, safeSession *SafeSession, sql st
 	case sqlparser.StmtInsert, sqlparser.StmtReplace, sqlparser.StmtUpdate, sqlparser.StmtDelete:
 		safeSession := safeSession
 
-		// In legacy mode, we ignore autocommit settings.
-		if e.legacyAutocommit {
-			return e.handleExec(ctx, safeSession, sql, bindVars, destKeyspace, destTabletType, dest, logStats)
-		}
-
 		mustCommit := false
 		if safeSession.Autocommit && !safeSession.InTransaction() {
 			mustCommit = true
@@ -206,7 +205,7 @@ func (e *Executor) execute(ctx context.Context, safeSession *SafeSession, sql st
 		// do is likely not final.
 		// The control flow is such that autocommitable can only be turned on
 		// at the beginning, but never after.
-		safeSession.SetAutocommitable(mustCommit)
+		safeSession.SetAutocommittable(mustCommit)
 
 		qr, err := e.handleExec(ctx, safeSession, sql, bindVars, destKeyspace, destTabletType, dest, logStats)
 		if err != nil {
@@ -249,8 +248,6 @@ func (e *Executor) handleExec(ctx context.Context, safeSession *SafeSession, sql
 		// TODO(sougou): change this flow to go through V3 functions
 		// which will allow us to benefit from the autocommitable flag.
 
-		queriesProcessed.Add("ShardDirect", 1)
-
 		if destKeyspace == "" {
 			return nil, errNoKeyspace
 		}
@@ -281,7 +278,7 @@ func (e *Executor) handleExec(ctx context.Context, safeSession *SafeSession, sql
 		logStats.BindVariables = bindVars
 		result, err := e.destinationExec(ctx, safeSession, sql, bindVars, dest, destKeyspace, destTabletType, logStats)
 		logStats.ExecuteTime = time.Since(execStart)
-		queriesRouted.Add("ShardDirect", int64(logStats.ShardQueries))
+		e.updateQueryCounts("ShardDirect", "", "", int64(logStats.ShardQueries))
 		return result, err
 	}
 
@@ -307,8 +304,8 @@ func (e *Executor) handleExec(ctx context.Context, safeSession *SafeSession, sql
 	qr, err := plan.Instructions.Execute(vcursor, bindVars, true)
 
 	logStats.ExecuteTime = time.Since(execStart)
-	queriesProcessed.Add(plan.Instructions.RouteType(), 1)
-	queriesRouted.Add(plan.Instructions.RouteType(), int64(logStats.ShardQueries))
+
+	e.updateQueryCounts(plan.Instructions.RouteType(), plan.Instructions.GetKeyspaceName(), plan.Instructions.GetTableName(), int64(logStats.ShardQueries))
 
 	var errCount uint64
 	if err != nil {
@@ -370,8 +367,7 @@ func (e *Executor) handleDDL(ctx context.Context, safeSession *SafeSession, sql 
 	result, err := e.destinationExec(ctx, safeSession, sql, bindVars, dest, destKeyspace, destTabletType, logStats)
 	logStats.ExecuteTime = time.Since(execStart)
 
-	queriesProcessed.Add("DDL", 1)
-	queriesRouted.Add("DDL", int64(logStats.ShardQueries))
+	e.updateQueryCounts("DDL", "", "", int64(logStats.ShardQueries))
 
 	return result, err
 }
@@ -421,7 +417,7 @@ func (e *Executor) handleBegin(ctx context.Context, safeSession *SafeSession, sq
 	err := e.txConn.Begin(ctx, safeSession)
 	logStats.ExecuteTime = time.Since(execStart)
 
-	queriesProcessed.Add("Begin", 1)
+	e.updateQueryCounts("Begin", "", "", 0)
 
 	return &sqltypes.Result{}, err
 }
@@ -430,8 +426,8 @@ func (e *Executor) handleCommit(ctx context.Context, safeSession *SafeSession, s
 	execStart := time.Now()
 	logStats.PlanTime = execStart.Sub(logStats.StartTime)
 	logStats.ShardQueries = uint32(len(safeSession.ShardSessions))
-	queriesProcessed.Add("Commit", 1)
-	queriesRouted.Add("Commit", int64(logStats.ShardQueries))
+	e.updateQueryCounts("Commit", "", "", int64(logStats.ShardQueries))
+
 	err := e.txConn.Commit(ctx, safeSession)
 	logStats.CommitTime = time.Since(execStart)
 	return &sqltypes.Result{}, err
@@ -441,8 +437,7 @@ func (e *Executor) handleRollback(ctx context.Context, safeSession *SafeSession,
 	execStart := time.Now()
 	logStats.PlanTime = execStart.Sub(logStats.StartTime)
 	logStats.ShardQueries = uint32(len(safeSession.ShardSessions))
-	queriesProcessed.Add("Rollback", 1)
-	queriesRouted.Add("Rollback", int64(logStats.ShardQueries))
+	e.updateQueryCounts("Rollback", "", "", int64(logStats.ShardQueries))
 	err := e.txConn.Rollback(ctx, safeSession)
 	logStats.CommitTime = time.Since(execStart)
 	return &sqltypes.Result{}, err
@@ -1043,8 +1038,7 @@ func (e *Executor) handleOther(ctx context.Context, safeSession *SafeSession, sq
 	execStart := time.Now()
 	result, err := e.destinationExec(ctx, safeSession, sql, bindVars, dest, destKeyspace, destTabletType, logStats)
 
-	queriesProcessed.Add("Other", 1)
-	queriesRouted.Add("Other", int64(logStats.ShardQueries))
+	e.updateQueryCounts("Other", "", "", int64(logStats.ShardQueries))
 
 	logStats.ExecuteTime = time.Since(execStart)
 	return result, err
@@ -1365,7 +1359,7 @@ func (e *Executor) ServeHTTP(response http.ResponseWriter, request *http.Request
 		}
 	} else if request.URL.Path == "/debug/vschema" {
 		response.Header().Set("Content-Type", "application/json; charset=utf-8")
-		b, err := json.MarshalIndent(e.VSchema().Keyspaces, "", " ")
+		b, err := json.MarshalIndent(e.VSchema(), "", " ")
 		if err != nil {
 			response.Write([]byte(err.Error()))
 			return
@@ -1381,6 +1375,14 @@ func (e *Executor) ServeHTTP(response http.ResponseWriter, request *http.Request
 // Plans returns the LRU plan cache
 func (e *Executor) Plans() *cache.LRUCache {
 	return e.plans
+}
+
+func (e *Executor) updateQueryCounts(planType, keyspace, tableName string, shardQueries int64) {
+	queriesProcessed.Add(planType, 1)
+	queriesRouted.Add(planType, shardQueries)
+	queriesProcessedByTable.Add([]string{planType, keyspace, tableName}, 1)
+	queriesRoutedByTable.Add([]string{planType, keyspace, tableName}, shardQueries)
+	return
 }
 
 // VSchemaStats returns the loaded vschema stats.
@@ -1414,4 +1416,101 @@ func buildVarCharRow(values ...string) []sqltypes.Value {
 		row[i] = sqltypes.NewVarChar(v)
 	}
 	return row
+}
+
+// Prepare executes a prepare statements.
+func (e *Executor) Prepare(ctx context.Context, method string, safeSession *SafeSession, sql string, bindVars map[string]*querypb.BindVariable) (fld []*querypb.Field, err error) {
+	logStats := NewLogStats(ctx, method, sql, bindVars)
+	fld, err = e.prepare(ctx, safeSession, sql, bindVars, logStats)
+	logStats.Error = err
+
+	// The mysql plugin runs an implicit rollback whenever a connection closes.
+	// To avoid spamming the log with no-op rollback records, ignore it if
+	// it was a no-op record (i.e. didn't issue any queries)
+	if !(logStats.StmtType == "ROLLBACK" && logStats.ShardQueries == 0) {
+		logStats.Send()
+	}
+	return fld, err
+}
+
+func (e *Executor) prepare(ctx context.Context, safeSession *SafeSession, sql string, bindVars map[string]*querypb.BindVariable, logStats *LogStats) ([]*querypb.Field, error) {
+	// Start an implicit transaction if necessary.
+	if !safeSession.Autocommit && !safeSession.InTransaction() {
+		if err := e.txConn.Begin(ctx, safeSession); err != nil {
+			return nil, err
+		}
+	}
+
+	destKeyspace, destTabletType, dest, err := e.ParseDestinationTarget(safeSession.TargetString)
+	if err != nil {
+		return nil, err
+	}
+
+	if safeSession.InTransaction() && destTabletType != topodatapb.TabletType_MASTER {
+		return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "transactions are supported only for master tablet types, current type: %v", destTabletType)
+	}
+	if bindVars == nil {
+		bindVars = make(map[string]*querypb.BindVariable)
+	}
+
+	stmtType := sqlparser.Preview(sql)
+	logStats.StmtType = sqlparser.StmtType(stmtType)
+
+	// Mysql warnings are scoped to the current session, but are
+	// cleared when a "non-diagnostic statement" is executed:
+	// https://dev.mysql.com/doc/refman/8.0/en/show-warnings.html
+	//
+	// To emulate this behavior, clear warnings from the session
+	// for all statements _except_ SHOW, so that SHOW WARNINGS
+	// can actually return them.
+	if stmtType != sqlparser.StmtShow {
+		safeSession.ClearWarnings()
+	}
+
+	switch stmtType {
+	case sqlparser.StmtSelect:
+		return e.handlePrepare(ctx, safeSession, sql, bindVars, destKeyspace, destTabletType, logStats)
+	case sqlparser.StmtDDL, sqlparser.StmtBegin, sqlparser.StmtCommit, sqlparser.StmtRollback, sqlparser.StmtSet, sqlparser.StmtInsert, sqlparser.StmtReplace, sqlparser.StmtUpdate, sqlparser.StmtDelete,
+		sqlparser.StmtUse, sqlparser.StmtOther, sqlparser.StmtComment:
+		return nil, nil
+	case sqlparser.StmtShow:
+		res, err := e.handleShow(ctx, safeSession, sql, bindVars, dest, destKeyspace, destTabletType, logStats)
+		return res.Fields, err
+	}
+	return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "unrecognized statement: %s", sql)
+}
+
+func (e *Executor) handlePrepare(ctx context.Context, safeSession *SafeSession, sql string, bindVars map[string]*querypb.BindVariable, destKeyspace string, destTabletType topodatapb.TabletType, logStats *LogStats) ([]*querypb.Field, error) {
+	// V3 mode.
+	query, comments := sqlparser.SplitMarginComments(sql)
+	vcursor := newVCursorImpl(ctx, safeSession, destKeyspace, destTabletType, comments, e, logStats)
+	plan, err := e.getPlan(
+		vcursor,
+		query,
+		comments,
+		bindVars,
+		skipQueryPlanCache(safeSession),
+		logStats,
+	)
+	execStart := time.Now()
+	logStats.PlanTime = execStart.Sub(logStats.StartTime)
+
+	if err != nil {
+		logStats.Error = err
+		return nil, err
+	}
+
+	qr, err := plan.Instructions.GetFields(vcursor, bindVars)
+	logStats.ExecuteTime = time.Since(execStart)
+	var errCount uint64
+	if err != nil {
+		logStats.Error = err
+		errCount = 1
+	} else {
+		logStats.RowsAffected = qr.RowsAffected
+	}
+
+	plan.AddStats(1, time.Since(logStats.StartTime), uint64(logStats.ShardQueries), logStats.RowsAffected, errCount)
+
+	return qr.Fields, err
 }
